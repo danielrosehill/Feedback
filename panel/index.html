@@ -147,6 +147,7 @@ function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;"
 function st(id) { return ANS[id] || (ANS[id] = { choice: null, note: "", value: "" }); }
 function choicesOf(g) { return g.choices || F.choices || []; }
 function toneOf(c, i) { return c.tone || TONES[i % TONES.length]; }
+function isDone(id) { return (OUTCOMES[id] || {}).state === "done"; }
 function answered(id) { const s = st(id); return F.input === "text" ? !!(s.value || "").trim() : !!s.choice; }
 
 async function load() {
@@ -168,7 +169,7 @@ async function load() {
   const show = $("#show");
   show.innerHTML = `<option value="all">Show all</option><option value="unanswered">Unanswered</option><option value="answered">Answered</option>` +
     (F.input !== "text" ? F.choices.map(c => `<option value="c:${esc(c.id)}">Only: ${esc(c.label)}</option>`).join("") : "") +
-    `<option value="sugg">Claude's suggestions</option><option value="notes">With notes</option><option value="outcome">With outcome</option>`;
+    `<option value="sugg">Claude's suggestions</option><option value="notes">With notes</option><option value="outcome">With outcome</option><option value="done">Finished (hidden elsewhere)</option>`;
   $("#general").value = resp.general_note || "";
   render(); banner();
 }
@@ -262,6 +263,8 @@ function visible(row) {
     const hay = [it.label, it.detail, it.id, ...(it.tags || []), ...Object.values(it.meta || {}), s.note, s.value, typeof it.suggested === "string" ? it.suggested : ""].join(" ").toLowerCase();
     if (!q.split(/\s+/).every(w => hay.includes(w))) return false;
   }
+  if (show === "done") return isDone(it.id);
+  if (isDone(it.id) && show !== "outcome") return false;   // finished items drop out of every other view
   if (show === "unanswered" && answered(it.id)) return false;
   if (show === "answered" && !answered(it.id)) return false;
   if (show.startsWith("c:") && s.choice !== show.slice(2)) return false;
@@ -272,24 +275,27 @@ function visible(row) {
 }
 
 function applyFilter() {
-  let total = 0, done = 0; const per = {};
+  let total = 0, done = 0, fin = 0; const per = {};
   document.querySelectorAll("section").forEach(sec => {
-    let shown = 0, ga = 0, gt = 0;
+    let shown = 0, ga = 0, gt = 0, gf = 0;
     sec.querySelectorAll(".row").forEach(r => {
       const v = visible(r); r.classList.toggle("hidden", !v); if (v) shown++;
+      if (isDone(r.dataset.id)) { gf++; fin++; return; }
       gt++; if (answered(r.dataset.id)) { ga++; const c = st(r.dataset.id).choice; if (c) per[c] = (per[c] || 0) + 1; }
     });
     total += gt; done += ga;
-    sec.querySelector(".gcount").textContent = `${ga}/${gt} answered`;
+    sec.querySelector(".gcount").textContent = `${ga}/${gt} answered` + (gf ? ` · ${gf} finished` : "");
     sec.querySelector(".empty").style.display = shown ? "none" : "block";
+    // a group whose items are all finished disappears unless you're looking at finished items
+    sec.style.display = (!shown && gf && gf === gt + gf && !["done", "outcome"].includes($("#show").value)) ? "none" : "";
   });
   const chips = F.input === "text" ? [] : F.choices.map((c, i) => per[c.id] ? `<span class="cnt t-${toneOf(c, i)}">${esc(c.label)} ${per[c.id]}</span>` : "");
-  $("#counts").innerHTML = chips.join("") + `<span class="cnt">${done}/${total} answered</span>`;
+  $("#counts").innerHTML = chips.join("") + `<span class="cnt">${done}/${total} answered</span>` + (fin ? `<span class="cnt">${fin} finished, hidden</span>` : "");
 }
 
 function groupAct(sec, g, act, cid) {
   sec.querySelectorAll(".row").forEach(r => {
-    if (r.classList.contains("hidden") && act !== "none") return;
+    if (isDone(r.dataset.id) || (r.classList.contains("hidden") && act !== "none")) return;
     const ch = r._ch;
     if (act === "none") setChoice(r, ch, null, true);
     if (act === "all") setChoice(r, ch, ch[0].id, true);

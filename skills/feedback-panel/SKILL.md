@@ -78,7 +78,19 @@ feedback-panel outcome <session> <id> done|failed|skipped "what happened"
 ```
 
 The open page shows each outcome as a coloured tag within 5 s. Then give a short summary in chat.
-For another round, Daniel can keep editing and Submit again (`rounds` counts the Submits).
+
+### Repeating rounds
+
+One session serves a list that is worked through over several rounds: Daniel answers a batch,
+Submits, Claude acts, he answers the next batch on the same page.
+
+- Items whose outcome is `done` drop out of the page (every view except "With outcome" and
+  "Finished"); groups with nothing left disappear; the header shows "N finished, hidden". Bulk
+  buttons never touch finished items. `skipped` and `failed` items stay visible.
+- `feedback-panel wait <session> --next` blocks until a Submit newer than the current round
+  (plain `wait` returns at once on an already-submitted session). Run it in the background.
+- `feedback-panel result <session> --new [--json]` lists only answers with no outcome yet (or a
+  `failed` one), i.e. what this round adds. Act on that, write outcomes, then `wait --next` again.
 
 ## 5. Offer to keep the form
 

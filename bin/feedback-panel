@@ -24,8 +24,8 @@ Commands:
   new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open] [--port N]
   serve <session> [--port N]                  run the server in the foreground
   status [session]                            one-line state
-  result [session] [--json]                   answers grouped by choice, notes, free text
-  wait [session] [--timeout S]                block until the user presses Submit
+  result [session] [--json] [--new]                 answers grouped by choice, notes, free text
+  wait [session] [--timeout S] [--next]              block until the user presses Submit
   outcome <session> <id> <done|skipped|failed> [text]
   open | stop [session]                       reopen the page / stop the server
   list                                        sessions, newest first
@@ -438,6 +438,15 @@ def cmd_status(a):
 def cmd_result(a):
     sess = resolve(a.session)
     items, out = build_result(sess)
+    if a.new:
+        # only what still needs acting on: no outcome yet, or the last attempt failed
+        oc = read_json(sess / "outcomes.json", {})
+        pending = lambda r: oc.get(r["id"], {}).get("state") in (None, "failed")
+        out["by_choice"] = {c: [r for r in rows if pending(r)] for c, rows in out["by_choice"].items()}
+        for k in ("answers", "notes_only"):
+            if k in out:
+                out[k] = [r for r in out[k] if pending(r)]
+        out["new_only"] = True
     if a.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
@@ -470,9 +479,11 @@ def cmd_result(a):
 def cmd_wait(a):
     sess = resolve(a.session)
     t0 = time.time()
+    start_round = read_json(sess / "response.json", {}).get("rounds") or 0
     while True:
         resp = read_json(sess / "response.json", {})
-        if resp.get("status") == "submitted":
+        fresh = (resp.get("rounds") or 0) > start_round if a.next else True
+        if resp.get("status") == "submitted" and fresh:
             print(f"submitted {resp.get('submitted_at')} (round {resp.get('rounds')})")
             return
         if a.timeout and time.time() - t0 > a.timeout:
@@ -601,8 +612,8 @@ def main():
     x = sp.add_parser("serve"); x.add_argument("session"); x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_serve)
     for name, f in (("status", cmd_status), ("open", cmd_open), ("stop", cmd_stop)):
         x = sp.add_parser(name); x.add_argument("session", nargs="?"); x.set_defaults(f=f)
-    x = sp.add_parser("result"); x.add_argument("session", nargs="?"); x.add_argument("--json", action="store_true"); x.set_defaults(f=cmd_result)
-    x = sp.add_parser("wait"); x.add_argument("session", nargs="?"); x.add_argument("--timeout", type=int, default=0); x.set_defaults(f=cmd_wait)
+    x = sp.add_parser("result"); x.add_argument("session", nargs="?"); x.add_argument("--json", action="store_true"); x.add_argument("--new", action="store_true", help="only items with no outcome yet (or failed)"); x.set_defaults(f=cmd_result)
+    x = sp.add_parser("wait"); x.add_argument("session", nargs="?"); x.add_argument("--timeout", type=int, default=0); x.add_argument("--next", action="store_true", help="wait for a Submit newer than the current round"); x.set_defaults(f=cmd_wait)
     x = sp.add_parser("outcome"); x.add_argument("session"); x.add_argument("id"); x.add_argument("state", choices=["done", "skipped", "failed"]); x.add_argument("text", nargs="*"); x.set_defaults(f=cmd_outcome)
     x = sp.add_parser("list"); x.set_defaults(f=cmd_list)
     x = sp.add_parser("templates"); x.set_defaults(f=cmd_templates)
