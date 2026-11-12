@@ -1,28 +1,41 @@
 #!/usr/bin/env python3
-"""feedback-panel: put a long list of items in front of the user as a tick-box web page,
-autosave their ticks and notes to a JSON file, and let Claude read the result back.
+"""feedback-panel: put a long list of items in front of the user as a local web form, autosave
+their answers to a JSON file, and let Claude read the result back.
 
 Stdlib only. One session = one directory under $FEEDBACK_PANEL_HOME (default
-~/.local/share/feedback-panel/sessions/<YYYY-MM-DD-HHMM>-<slug>/) holding:
+~/.local/share/feedback-panel/sessions/<YYYY-MM-DD-HHMMSS>-<slug>/) holding:
 
-  items.json     what Claude asked about (see SCHEMA.md)
-  response.json  what the user ticked / wrote (autosaved on every change)
+  items.json     the form: items + answer options (see SCHEMA.md)
+  page.html      only when the form's template ships its own page
+  response.json  what the user answered (autosaved on every change)
   outcomes.json  what Claude did about each item afterwards (shown back in the page)
   server.json    pid / port / url of the running server
 
-Commands:
-  new <items.json> [--name SLUG] [--suggest S.json] [--no-open] [--port N]
-                                                        create a session, start server, open browser
-  serve <session>                                       run the server in the foreground
-  status [session]                                      one-line state (draft/submitted, counts)
-  result [session] [--json]                             ticked items with notes, for Claude to act on
-  wait [session] [--timeout S]                          block until the user presses Submit
-  outcome <session> <id> <done|skipped|failed> [text]   record what happened to an item
-  open [session]                                        reopen the page (restarts server if needed)
-  stop [session]                                        stop the server
-  list                                                  list sessions, newest first
+Forms answer in one of three ways (`input`):
+  choice  every item gets one of the form's `choices` (e.g. Remove / Keep for now / Ask me)
+  check   a single tick box per item (`mark_label` says what a tick means)
+  text    every item is a question with a free-text answer
 
-<session> may be a path, a directory name under the sessions dir, or 'latest' (the default).
+Templates and saved forms live in a separate repo ($FEEDBACK_PANEL_TEMPLATES, default
+../Feedback-Panel-Templates next to this plugin): templates/<name>/form.json (generic) and
+library/<name>/form.json + recipe.md (forms worth keeping, with how to regenerate their items).
+
+Commands:
+  new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open] [--port N]
+  serve <session> [--port N]                  run the server in the foreground
+  status [session]                            one-line state
+  result [session] [--json]                   answers grouped by choice, notes, free text
+  wait [session] [--timeout S]                block until the user presses Submit
+  outcome <session> <id> <done|skipped|failed> [text]
+  open | stop [session]                       reopen the page / stop the server
+  list                                        sessions, newest first
+  templates                                   list templates and saved library forms
+  template <name>                             print a template's form.json and recipe.md
+  save <session> <name> [--generator CMD] [--description TEXT] [--force]
+                                              keep this session's form in library/<name>/
+
+<session> may be a path, a directory name under the sessions dir, a unique substring of one, or
+'latest' (the default). Template names may be prefixed 'library:' or 'templates:' to disambiguate.
 """
 import argparse
 import datetime as dt
@@ -42,6 +55,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PANEL_HTML = ROOT / "panel" / "index.html"
 HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
+TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
+FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "suggest_choice", "submit_hint")
 LOCK = threading.Lock()
 
 
@@ -68,6 +83,8 @@ def write_json(p, data):
     tmp.replace(p)
 
 
+# ---------------------------------------------------------------- sessions
+
 def sessions():
     if not HOME.exists():
         return []
@@ -88,13 +105,37 @@ def resolve(ref):
     matches = [d for d in sessions() if ref in d.name]
     if len(matches) == 1:
         return matches[0]
-    die(f"no unique session matches {ref!r}")
+    if len(matches) > 1:  # newest wins for a repeated form name
+        return matches[0]
+    die(f"no session matches {ref!r}")
 
 
 def all_items(items):
     for g in items.get("groups", []):
         for it in g.get("items", []):
             yield g, it
+
+
+# ---------------------------------------------------------------- form model
+
+def normalize(items):
+    """Fill in input/choices so the page and result only deal with one shape."""
+    if items.get("input") not in ("choice", "check", "text"):
+        items["input"] = "choice" if items.get("choices") else "check"
+    if items["input"] == "check":
+        items["choices"] = [{"id": "marked", "label": items.get("mark_label") or "Ticked", "tone": "danger"}]
+    if items["input"] == "choice" and not items.get("choices"):
+        die("input 'choice' needs a 'choices' list")
+    for c in items.get("choices", []):
+        if "id" not in c or "label" not in c:
+            die("every choice needs 'id' and 'label'")
+    if items.get("suggest_choice") is None and items.get("choices"):
+        items["suggest_choice"] = items["choices"][0]["id"]
+    return items
+
+
+def choices_for(items, group):
+    return group.get("choices") or items.get("choices") or []
 
 
 def validate(items):
@@ -109,6 +150,42 @@ def validate(items):
         seen.add(it["id"])
     return len(seen)
 
+
+def find_template(name):
+    kinds = ("library", "templates")
+    if ":" in name:
+        k, name = name.split(":", 1)
+        kinds = (k,)
+    for k in kinds:
+        d = TEMPLATES / k / name
+        if (d / "form.json").exists():
+            return d
+    die(f"no template {name!r} in {TEMPLATES} (try: feedback-panel templates)")
+
+
+def fill(s, ctx):
+    return re.sub(r"\{(\w+)\}", lambda m: str(ctx.get(m.group(1), m.group(0))), s) if isinstance(s, str) else s
+
+
+def apply_template(items, tdir):
+    form = read_json(tdir / "form.json")
+    ctx = {"host": socket.gethostname(), "date": f"{dt.date.today():%Y-%m-%d}"}
+    for k in FORM_KEYS:
+        if k not in form:
+            continue
+        # The template decides how the form answers; wording in the items file only wins
+        # for title/instructions/submit_hint.
+        if k in ("title", "instructions", "submit_hint") and k in items:
+            continue
+        items[k] = fill(form[k], ctx)
+    if form.get("input") in ("choice", "text"):
+        items.pop("mark_label", None)
+    items["_template"] = f"{tdir.parent.name}:{tdir.name}"
+    items["_template_form"] = form
+    return form
+
+
+# ---------------------------------------------------------------- server
 
 def server_alive(sess):
     info = read_json(sess / "server.json")
@@ -144,8 +221,6 @@ def open_browser(url):
     return False
 
 
-# ---------------------------------------------------------------- server
-
 def make_handler(sess):
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, fmt, *a):
@@ -167,14 +242,13 @@ def make_handler(sess):
         def do_GET(self):
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
-                return self.send(200, PANEL_HTML.read_bytes(), "text/html")
+                page = sess / "page.html" if (sess / "page.html").exists() else PANEL_HTML
+                return self.send(200, page.read_bytes(), "text/html")
             if path == "/api/session":
-                return self.send(200, {
-                    "items": read_json(sess / "items.json"),
-                    "response": read_json(sess / "response.json", {}),
-                    "outcomes": read_json(sess / "outcomes.json", {}),
-                    "session": sess.name,
-                })
+                items = read_json(sess / "items.json")
+                items.pop("_template_form", None)
+                return self.send(200, {"items": items, "response": read_json(sess / "response.json", {}),
+                                       "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
             if path == "/api/outcomes":
                 return self.send(200, read_json(sess / "outcomes.json", {}))
             self.send(404, {"error": "not found"})
@@ -182,7 +256,7 @@ def make_handler(sess):
         def do_POST(self):
             if self.path != "/api/response":
                 return self.send(404, {"error": "not found"})
-            # Only accept same-origin posts (the page itself); blocks drive-by posts from other sites.
+            # Only the page itself may write; blocks drive-by posts from other sites.
             origin = self.headers.get("Origin")
             if origin and not re.match(r"^http://(127\.0\.0\.1|localhost):\d+$", origin):
                 return self.send(403, {"error": "bad origin"})
@@ -194,20 +268,23 @@ def make_handler(sess):
             with LOCK:
                 prev = read_json(sess / "response.json", {})
                 items = read_json(sess / "items.json")
-                valid = {it["id"] for _, it in all_items(items)}
-                entries = {k: v for k, v in (data.get("items") or {}).items() if k in valid}
+                allowed = {it["id"]: {c["id"] for c in choices_for(items, g)} for g, it in all_items(items)}
+                entries = {}
+                for k, v in (data.get("items") or {}).items():
+                    if k not in allowed or not isinstance(v, dict):
+                        continue
+                    e = {"choice": v.get("choice") if v.get("choice") in allowed[k] else None,
+                         "note": str(v.get("note") or ""), "value": str(v.get("value") or "")}
+                    if e["choice"] or e["note"].strip() or e["value"].strip():
+                        entries[k] = e
                 submit = bool(data.get("submit"))
                 # Any edit after a submit puts the session back to draft until the next Submit,
                 # so `wait` works across repeated rounds.
-                resp = {
-                    "status": "submitted" if submit else "draft",
-                    "general_note": data.get("general_note", ""),
-                    "items": entries,
-                    "updated": now(),
-                    "created": prev.get("created", now()),
-                    "submitted_at": now() if submit else prev.get("submitted_at"),
-                    "rounds": prev.get("rounds", 0) + (1 if submit else 0),
-                }
+                resp = {"status": "submitted" if submit else "draft",
+                        "general_note": str(data.get("general_note") or ""),
+                        "items": entries, "updated": now(), "created": prev.get("created", now()),
+                        "submitted_at": now() if submit else prev.get("submitted_at"),
+                        "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
                 write_json(sess / "response.json", resp)
             self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"]})
 
@@ -238,12 +315,14 @@ def start_background(sess, port=0):
         info = server_alive(sess)
         if info:
             return info
-    die(f"server did not start; see {sess/'server.log'}")
+    die(f"server did not start; see {sess / 'server.log'}")
 
 
 def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "panel"
 
+
+# ---------------------------------------------------------------- commands
 
 def cmd_new(a):
     src = Path(a.items).expanduser()
@@ -251,75 +330,121 @@ def cmd_new(a):
     if items is None:
         die(f"{src} not found")
     n = validate(items)
+    tdir = find_template(a.template) if a.template else None
+    if tdir:
+        apply_template(items, tdir)
+    normalize(items)
     if a.suggest:
         sugg = read_json(Path(a.suggest).expanduser())
         if sugg is None:
             die(f"{a.suggest} not found")
-        ids = {it["id"]: it for _, it in all_items(items)}
+        ids = {it["id"]: (g, it) for g, it in all_items(items)}
         unknown = [k for k in sugg if k not in ids]
         if unknown:
             print(f"feedback-panel: ignoring {len(unknown)} unknown suggestion ids: {', '.join(unknown[:5])}", file=sys.stderr)
-        for k, reason in sugg.items():
-            if k in ids:
-                ids[k]["suggested"] = reason or True
-    slug = slugify(a.name or items.get("title", src.stem))
+        for k, s in sugg.items():
+            if k not in ids:
+                continue
+            g, it = ids[k]
+            if isinstance(s, dict):  # {"choice": "keep", "reason": "..."}
+                it["suggested"] = s.get("reason") or True
+                if s.get("choice") in {c["id"] for c in choices_for(items, g)}:
+                    it["suggested_choice"] = s["choice"]
+            else:
+                it["suggested"] = s or True
+    slug = slugify(a.name or (tdir.name if tdir else items.get("title", src.stem)))
     sess = HOME / f"{dt.datetime.now():%Y-%m-%d-%H%M%S}-{slug}"
     sess.mkdir(parents=True)
+    page = (items.get("_template_form") or {}).get("page")
+    if page and (tdir / page).exists():
+        shutil.copy(tdir / page, sess / "page.html")
     write_json(sess / "items.json", items)
     info = start_background(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
-    print(json.dumps({"session": str(sess), "url": info["url"], "items": n,
-                      "groups": len(items["groups"]), "browser_opened": bool(opened)}, indent=2))
+    print(json.dumps({"session": str(sess), "url": info["url"], "items": n, "groups": len(items["groups"]),
+                      "input": items["input"], "choices": [c["label"] for c in items.get("choices", [])],
+                      "template": items.get("_template"), "browser_opened": bool(opened)}, indent=2))
 
 
-def summarize(sess):
+def legacy(entry):
+    """Sessions created before choices existed stored {'marked': bool}."""
+    if "choice" not in entry and entry.get("marked"):
+        entry = dict(entry, choice="marked")
+    return entry
+
+
+def build_result(sess):
     items = read_json(sess / "items.json")
+    normalize(items)
     resp = read_json(sess / "response.json", {})
-    marks = {k: v for k, v in resp.get("items", {}).items() if v.get("marked")}
-    notes = {k: v for k, v in resp.get("items", {}).items() if (v.get("note") or "").strip()}
-    total = sum(1 for _ in all_items(items))
-    return items, resp, marks, notes, total
+    answers = {k: legacy(v) for k, v in resp.get("items", {}).items()}
+    labels = {c["id"]: c["label"] for g in items["groups"] for c in choices_for(items, g)}
+    out = {"session": str(sess), "title": items.get("title", sess.name), "status": resp.get("status", "untouched"),
+           "input": items["input"], "rounds": resp.get("rounds", 0), "general_note": resp.get("general_note", ""),
+           "choices": labels, "by_choice": {cid: [] for cid in labels}, "answers": [], "notes_only": [],
+           "unanswered": 0, "total": 0}
+    for g, it in all_items(items):
+        out["total"] += 1
+        r = answers.get(it["id"], {})
+        row = {"id": it["id"], "label": it["label"], "group": g.get("name"), "note": r.get("note", ""),
+               "meta": it.get("meta", {})}
+        if items["input"] == "text":
+            if (r.get("value") or "").strip():
+                out["answers"].append(dict(row, answer=r["value"]))
+            else:
+                out["unanswered"] += 1
+            continue
+        if r.get("choice"):
+            out["by_choice"].setdefault(r["choice"], []).append(row)
+        else:
+            out["unanswered"] += 1
+            if (r.get("note") or "").strip():
+                out["notes_only"].append(row)
+    out["ticked"] = [r for rows in out["by_choice"].values() for r in rows]  # compat: everything answered
+    return items, out
 
 
 def cmd_status(a):
     sess = resolve(a.session)
-    items, resp, marks, notes, total = summarize(sess)
+    items, out = build_result(sess)
     alive = server_alive(sess)
-    print(f"{sess.name}: {resp.get('status', 'untouched')} | {len(marks)}/{total} ticked | "
-          f"{len(notes)} notes | updated {resp.get('updated', '-')} | "
-          f"server {'up ' + alive['url'] if alive else 'down'}")
+    counts = ", ".join(f"{out['choices'][c]} {len(rows)}" for c, rows in out["by_choice"].items() if rows) or \
+        (f"{len(out['answers'])} answered" if out["input"] == "text" else "nothing chosen")
+    resp = read_json(sess / "response.json", {})
+    print(f"{sess.name}: {out['status']} | {counts} | {out['unanswered']}/{out['total']} unanswered | "
+          f"updated {resp.get('updated', '-')} | server {'up ' + alive['url'] if alive else 'down'}")
 
 
 def cmd_result(a):
     sess = resolve(a.session)
-    items, resp, marks, notes, total = summarize(sess)
-    mark_label = items.get("mark_label", "Ticked")
-    out = {"session": str(sess), "status": resp.get("status", "untouched"), "mark_label": mark_label,
-           "general_note": resp.get("general_note", ""), "ticked": [], "notes_only": []}
-    for g, it in all_items(items):
-        r = resp.get("items", {}).get(it["id"], {})
-        row = {"id": it["id"], "label": it["label"], "group": g.get("name"), "note": r.get("note", ""),
-               "meta": it.get("meta", {})}
-        if r.get("marked"):
-            out["ticked"].append(row)
-        elif (r.get("note") or "").strip():
-            out["notes_only"].append(row)
+    items, out = build_result(sess)
     if a.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return
-    print(f"# {items.get('title', sess.name)}  ({out['status']}, {len(out['ticked'])}/{total} {mark_label.lower()})")
+    print(f"# {out['title']}  ({out['status']}, round {out['rounds']}, {out['unanswered']}/{out['total']} unanswered)")
     if out["general_note"]:
         print(f"\nGeneral note: {out['general_note']}")
-    for key, head in (("ticked", mark_label), ("notes_only", "Notes on unticked items")):
-        if out[key]:
-            print(f"\n## {head}")
-            grp = None
-            for r in out[key]:
-                if r["group"] != grp:
-                    grp = r["group"]
-                    print(f"\n### {grp}")
-                lab = r["label"] if r["label"] == r["id"] else f"{r['label']}  [{r['id']}]"
-                print(f"- {lab}" + (f"  — {r['note']}" if r["note"] else ""))
+
+    def block(head, rows, extra=None):
+        if not rows:
+            return
+        print(f"\n## {head} ({len(rows)})")
+        grp = None
+        for r in rows:
+            if r["group"] != grp:
+                grp = r["group"]
+                print(f"\n### {grp}")
+            lab = r["label"] if r["label"] == r["id"] else f"{r['label']}  [{r['id']}]"
+            tail = f"  — {r['note']}" if r["note"] else ""
+            print(f"- {lab}{tail}")
+            if extra:
+                print(f"  > {extra(r)}")
+
+    if out["input"] == "text":
+        block("Answers", out["answers"], lambda r: r["answer"].replace("\n", "\n  > "))
+    for cid, rows in out["by_choice"].items():
+        block(out["choices"][cid], rows)
+    block("Notes on unanswered items", out["notes_only"])
 
 
 def cmd_wait(a):
@@ -328,7 +453,7 @@ def cmd_wait(a):
     while True:
         resp = read_json(sess / "response.json", {})
         if resp.get("status") == "submitted":
-            print(f"submitted {resp.get('submitted_at')}")
+            print(f"submitted {resp.get('submitted_at')} (round {resp.get('rounds')})")
             return
         if a.timeout and time.time() - t0 > a.timeout:
             die("timed out waiting for submit", 2)
@@ -367,13 +492,94 @@ def cmd_stop(a):
 def cmd_list(a):
     for d in sessions():
         resp = read_json(d / "response.json", {})
-        print(f"{d.name:60} {resp.get('status', 'untouched'):10} {'up' if server_alive(d) else ''}")
+        tpl = (read_json(d / "items.json") or {}).get("_template", "")
+        print(f"{d.name:55} {resp.get('status', 'untouched'):10} {tpl:28} {'up' if server_alive(d) else ''}")
+
+
+def cmd_templates(a):
+    if not TEMPLATES.exists():
+        die(f"templates repo not found at {TEMPLATES} (gh repo clone danielrosehill/Feedback-Panel-Templates {TEMPLATES})")
+    for kind in ("templates", "library"):
+        d = TEMPLATES / kind
+        if not d.exists():
+            continue
+        print(f"## {kind}")
+        for t in sorted(d.iterdir()):
+            f = read_json(t / "form.json")
+            if not f:
+                continue
+            opts = " / ".join(c["label"] for c in f.get("choices", [])) or f.get("input", "check")
+            print(f"  {t.name:26} {opts:42} {f.get('description', '')}")
+
+
+def cmd_template(a):
+    t = find_template(a.name)
+    print(f"# {t}\n")
+    print((t / "form.json").read_text())
+    if (t / "recipe.md").exists():
+        print((t / "recipe.md").read_text())
+
+
+def cmd_save(a):
+    sess = resolve(a.session)
+    items = read_json(sess / "items.json")
+    dest = TEMPLATES / "library" / slugify(a.name)
+    if (dest / "form.json").exists() and not a.force:
+        die(f"{dest} exists; pass --force to update it")
+    dest.mkdir(parents=True, exist_ok=True)
+    base = items.get("_template_form") or {}
+    form = {"name": dest.name, "description": a.description or base.get("description") or items.get("title", "")}
+    ctx = {"host": socket.gethostname(), "date": f"{dt.date.today():%Y-%m-%d}"}
+    for k in FORM_KEYS:
+        v = items.get(k, base.get(k))
+        # Keep the template's {host}/{date} placeholders unless Claude customised the value.
+        if k in base and fill(base[k], ctx) == v:
+            v = base[k]
+        if v is not None and not (k == "choices" and items.get("input") == "check"):
+            form[k] = v
+    if a.generator:
+        form["generator"] = a.generator
+    elif base.get("generator"):
+        form["generator"] = base["generator"]
+    if (sess / "page.html").exists():
+        shutil.copy(sess / "page.html", dest / "page.html")
+        form["page"] = "page.html"
+    form["based_on"] = items.get("_template", "")
+    form["saved"] = f"{dt.date.today():%Y-%m-%d}"
+    write_json(dest / "form.json", form)
+    write_json(dest / "example-items.json", {k: v for k, v in items.items() if not k.startswith("_")} | {
+        "groups": [dict(g, items=g["items"][:3]) for g in items["groups"]]})
+    recipe = dest / "recipe.md"
+    if not recipe.exists():
+        recipe.write_text(f"""# {dest.name}
+
+{form['description']}
+
+## When to use
+
+TODO: the request that should bring this form back.
+
+## Build the items
+
+{('Run: `' + form['generator'] + '` (writes items.json to $OUT).') if form.get('generator') else 'TODO: how to gather the items (commands, sources). One group per kind.'}
+
+## Suggestions
+
+TODO: what Claude tags and why (factual reasons only, never pre-answered).
+
+## Acting on the answers
+
+TODO: what each choice means in practice, commands to run, where to record the outcome.
+""")
+    print(dest)
 
 
 def main():
     p = argparse.ArgumentParser(prog="feedback-panel", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
-    x = sp.add_parser("new"); x.add_argument("items"); x.add_argument("--name"); x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0); x.add_argument("--suggest", help="JSON {item_id: reason} merged in as Claude's suggestions"); x.set_defaults(f=cmd_new)
+    x = sp.add_parser("new"); x.add_argument("items"); x.add_argument("--template"); x.add_argument("--name")
+    x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0)
+    x.add_argument("--suggest", help="JSON {item_id: reason | {choice, reason}} merged in as Claude's suggestions"); x.set_defaults(f=cmd_new)
     x = sp.add_parser("serve"); x.add_argument("session"); x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_serve)
     for name, f in (("status", cmd_status), ("open", cmd_open), ("stop", cmd_stop)):
         x = sp.add_parser(name); x.add_argument("session", nargs="?"); x.set_defaults(f=f)
@@ -381,6 +587,10 @@ def main():
     x = sp.add_parser("wait"); x.add_argument("session", nargs="?"); x.add_argument("--timeout", type=int, default=0); x.set_defaults(f=cmd_wait)
     x = sp.add_parser("outcome"); x.add_argument("session"); x.add_argument("id"); x.add_argument("state", choices=["done", "skipped", "failed"]); x.add_argument("text", nargs="*"); x.set_defaults(f=cmd_outcome)
     x = sp.add_parser("list"); x.set_defaults(f=cmd_list)
+    x = sp.add_parser("templates"); x.set_defaults(f=cmd_templates)
+    x = sp.add_parser("template"); x.add_argument("name"); x.set_defaults(f=cmd_template)
+    x = sp.add_parser("save"); x.add_argument("session"); x.add_argument("name"); x.add_argument("--generator")
+    x.add_argument("--description"); x.add_argument("--force", action="store_true"); x.set_defaults(f=cmd_save)
     a = p.parse_args()
     a.f(a)
 

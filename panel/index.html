@@ -8,14 +8,16 @@
 <style>
 :root {
   --bg: #f6f6f4; --card: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e2de;
-  --accent: #2f6fde; --accent-soft: #e6eefc; --mark: #c4352b; --mark-soft: #fbe9e7;
-  --sugg: #9a6b00; --sugg-soft: #fff4d6; --ok: #2e7d32; --ok-soft: #e5f3e6;
+  --accent: #2f6fde; --accent-soft: #e6eefc;
+  --danger: #c4352b; --danger-soft: #fbe9e7; --warn: #9a6b00; --warn-soft: #fff4d6;
+  --ok: #2e7d32; --ok-soft: #e5f3e6; --info: #2f6fde; --info-soft: #e6eefc; --neutral: #55555c; --neutral-soft: #ececea;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #17171a; --card: #202024; --fg: #ececef; --muted: #9a9aa3; --line: #34343a;
-    --accent: #7aa7ff; --accent-soft: #23304a; --mark: #ff7b6e; --mark-soft: #3a2422;
-    --sugg: #f0c45a; --sugg-soft: #3a3120; --ok: #7bd389; --ok-soft: #1f3424;
+    --accent: #7aa7ff; --accent-soft: #23304a;
+    --danger: #ff7b6e; --danger-soft: #3a2422; --warn: #f0c45a; --warn-soft: #3a3120;
+    --ok: #7bd389; --ok-soft: #1f3424; --info: #7aa7ff; --info-soft: #23304a; --neutral: #b5b5bd; --neutral-soft: #2c2c31;
   }
 }
 * { box-sizing: border-box; }
@@ -23,78 +25,95 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 syste
 header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line); padding: 12px 16px; }
 .top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 h1 { font-size: 18px; margin: 0; flex: 1 1 auto; }
-.instructions { color: var(--muted); margin: 6px 0 0; max-width: 900px; white-space: pre-wrap; }
+.instructions { color: var(--muted); margin: 6px 0 0; max-width: 950px; white-space: pre-wrap; }
 .controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
-input[type=search], select, textarea, input.note {
+input[type=search], select, textarea {
   font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
 }
 input[type=search] { flex: 1 1 260px; min-width: 0; }
 button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.counter { font-weight: 600; }
+.counts { display: flex; gap: 6px; flex-wrap: wrap; }
 .save { color: var(--muted); font-size: 12px; min-width: 110px; text-align: right; }
-.save.err { color: var(--mark); }
+.save.err { color: var(--danger); }
 .banner { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 13px; display: none; }
 .banner.show { display: block; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
-.banner.warn { background: var(--sugg-soft); color: var(--sugg); }
-main { padding: 12px 16px 80px; max-width: 1200px; margin: 0 auto; }
+.banner.warn { background: var(--warn-soft); color: var(--warn); }
+main { padding: 12px 16px 80px; max-width: 1250px; margin: 0 auto; }
 section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
 .ghead { display: flex; gap: 8px; align-items: center; padding: 10px 12px; cursor: pointer; user-select: none; flex-wrap: wrap; }
 .ghead h2 { font-size: 15px; margin: 0; flex: 1 1 auto; }
-.ghead .chev { transition: transform .15s; display: inline-block; width: 14px; }
+.chev { transition: transform .15s; display: inline-block; width: 14px; }
 section.collapsed .chev { transform: rotate(-90deg); }
-section.collapsed .gbody { display: none; }
+section.collapsed .gbody, section.collapsed .gdesc { display: none; }
 .gdesc { color: var(--muted); padding: 0 12px 8px 34px; margin-top: -4px; }
-.gtools { display: flex; gap: 6px; }
-.gtools button { padding: 3px 8px; font-size: 12px; }
+.gtools { display: flex; gap: 6px; align-items: center; }
+.gtools button, .gtools select { padding: 3px 8px; font-size: 12px; }
 .gcount { color: var(--muted); font-size: 12px; }
-.row { display: grid; grid-template-columns: 26px 1fr auto; gap: 4px 8px; padding: 7px 12px; border-top: 1px solid var(--line); align-items: start; }
-.row.marked { background: var(--mark-soft); }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 8px 12px; border-top: 1px solid var(--line); align-items: start; border-left: 4px solid transparent; }
+.row.check { grid-template-columns: 26px 1fr auto; }
 .row.hidden { display: none; }
-.row input[type=checkbox] { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--mark); cursor: pointer; }
-.label { font-weight: 550; word-break: break-word; cursor: pointer; }
+.row.hover { outline: 1px dashed var(--line); outline-offset: -2px; }
+.row input[type=checkbox] { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--danger); cursor: pointer; }
+.label { font-weight: 550; word-break: break-word; }
+.check .label { cursor: pointer; }
 .detail { color: var(--muted); font-size: 13px; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .detail:hover { -webkit-line-clamp: unset; }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
 .chip { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
-.chip.sugg { background: var(--sugg-soft); color: var(--sugg); border-color: transparent; }
+.chip.sugg { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .chip.out-done { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
-.chip.out-failed { background: var(--mark-soft); color: var(--mark); border-color: transparent; }
-.chip.out-skipped { color: var(--muted); }
-.right { display: flex; gap: 6px; align-items: center; }
+.chip.out-failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.right { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .size { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.notebtn { padding: 2px 7px; font-size: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 4px 9px; font-size: 12.5px; background: var(--card); color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.sugg { box-shadow: inset 0 -2px 0 var(--warn); }
+.notebtn { padding: 3px 7px; font-size: 12px; }
 .notebtn.has { border-color: var(--accent); color: var(--accent); }
-input.note { grid-column: 2 / 4; width: 100%; display: none; }
-.row.noteopen input.note { display: block; }
+.note, .answer { grid-column: 1 / -1; width: 100%; display: none; resize: vertical; }
+.row.check .note { grid-column: 2 / -1; }
+.row.noteopen .note, .answer { display: block; }
+.answer { min-height: 54px; }
 .general { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .general textarea { width: 100%; min-height: 70px; resize: vertical; }
 .empty { color: var(--muted); padding: 10px 12px; font-style: italic; display: none; }
+.hint { color: var(--muted); font-size: 12px; }
 kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
-@media (max-width: 600px) { .row { grid-template-columns: 24px 1fr; } .right { grid-column: 2; } input.note { grid-column: 1 / 3; } }
+/* tones */
+.t-danger.on { background: var(--danger-soft) !important; color: var(--danger) !important; font-weight: 600; }
+.t-warn.on { background: var(--warn-soft) !important; color: var(--warn) !important; font-weight: 600; }
+.t-ok.on { background: var(--ok-soft) !important; color: var(--ok) !important; font-weight: 600; }
+.t-info.on { background: var(--info-soft) !important; color: var(--info) !important; font-weight: 600; }
+.t-neutral.on { background: var(--neutral-soft) !important; color: var(--neutral) !important; font-weight: 600; }
+.row.r-danger { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger-soft) 55%, transparent); }
+.row.r-warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn-soft) 55%, transparent); }
+.row.r-ok { border-left-color: var(--ok); }
+.row.r-info { border-left-color: var(--info); background: color-mix(in srgb, var(--info-soft) 45%, transparent); }
+.row.r-neutral { border-left-color: var(--neutral); }
+.cnt { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.cnt.t-danger, .cnt.t-warn, .cnt.t-ok, .cnt.t-info, .cnt.t-neutral { border-color: transparent; }
+.cnt.t-danger { background: var(--danger-soft); color: var(--danger); } .cnt.t-warn { background: var(--warn-soft); color: var(--warn); }
+.cnt.t-ok { background: var(--ok-soft); color: var(--ok); } .cnt.t-info { background: var(--info-soft); color: var(--info); }
+.cnt.t-neutral { background: var(--neutral-soft); color: var(--neutral); }
+@media (max-width: 640px) { .row, .row.check { grid-template-columns: 1fr; } .row.check input[type=checkbox] { justify-self: start; } .right { justify-content: flex-start; } .row.check .note { grid-column: 1; } }
 </style>
 </head>
 <body>
 <header>
   <div class="top">
     <h1 id="title">Loading…</h1>
-    <span class="counter" id="counter"></span>
+    <span class="counts" id="counts"></span>
     <span class="save" id="save"></span>
     <button class="primary" id="submit">Submit</button>
   </div>
   <p class="instructions" id="instructions"></p>
   <div class="controls">
     <input type="search" id="q" placeholder="Filter (press / )">
-    <select id="show">
-      <option value="all">Show all</option>
-      <option value="marked">Ticked only</option>
-      <option value="unmarked">Unticked only</option>
-      <option value="sugg">Claude's suggestions</option>
-      <option value="notes">With notes</option>
-      <option value="outcome">With outcome</option>
-    </select>
+    <select id="show"></select>
     <select id="sort">
       <option value="given">Given order</option>
       <option value="name">Name</option>
@@ -102,19 +121,21 @@ kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 3px; paddin
     </select>
     <button id="expand">Expand all</button>
     <button id="collapse">Collapse all</button>
+    <span class="hint" id="keyhint"></span>
   </div>
   <div class="banner" id="banner"></div>
 </header>
 <main>
   <div id="groups"></div>
   <div class="general">
-    <strong>General note</strong> <span class="detail">— anything that applies to the whole list</span>
+    <strong>General note</strong> <span class="hint">— anything that applies to the whole list</span>
     <textarea id="general"></textarea>
   </div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
-let ITEMS, STATE = { items: {}, general_note: "" }, OUTCOMES = {}, STATUS = "untouched", saveTimer = null;
+let F, ANS = {}, OUTCOMES = {}, STATUS = "untouched", saveTimer = null, HOVER = null;
+const TONES = ["danger", "warn", "info", "neutral", "ok"];
 
 function fmtSize(b) {
   if (b == null) return "";
@@ -123,73 +144,127 @@ function fmtSize(b) {
   return (b >= 10 || i === 0 ? b.toFixed(0) : b.toFixed(1)) + " " + u[i];
 }
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-function st(id) { return STATE.items[id] || (STATE.items[id] = { marked: false, note: "" }); }
+function st(id) { return ANS[id] || (ANS[id] = { choice: null, note: "", value: "" }); }
+function choicesOf(g) { return g.choices || F.choices || []; }
+function toneOf(c, i) { return c.tone || TONES[i % TONES.length]; }
+function answered(id) { const s = st(id); return F.input === "text" ? !!(s.value || "").trim() : !!s.choice; }
 
 async function load() {
-  const r = await fetch("/api/session"); const d = await r.json();
-  ITEMS = d.items; OUTCOMES = d.outcomes || {};
+  const d = await (await fetch("/api/session")).json();
+  F = d.items; OUTCOMES = d.outcomes || {};
+  if (!F.input) F.input = F.choices ? "choice" : "check";
+  if (F.input === "check" && !F.choices) F.choices = [{ id: "marked", label: F.mark_label || "Ticked", tone: "danger" }];
   const resp = d.response || {};
-  STATE.items = resp.items || {}; STATE.general_note = resp.general_note || ""; STATUS = resp.status || "untouched";
-  document.title = ITEMS.title || "Feedback Panel";
-  $("#title").textContent = ITEMS.title || "Feedback Panel";
-  $("#instructions").textContent = (ITEMS.instructions || "") + (ITEMS.instructions ? "\n" : "") +
-    `Tick = ${ITEMS.mark_label || "selected"}. Everything autosaves; press Submit when you're done and tell Claude.`;
-  $("#general").value = STATE.general_note;
+  for (const [k, v] of Object.entries(resp.items || {})) ANS[k] = { choice: v.choice ?? (v.marked ? "marked" : null), note: v.note || "", value: v.value || "" };
+  STATUS = resp.status || "untouched";
+  document.title = F.title || "Feedback Panel";
+  $("#title").textContent = F.title || "Feedback Panel";
+  const how = F.input === "text" ? "Answer in the boxes." :
+    F.input === "check" ? `Tick = ${F.choices[0].label}.` :
+    `Pick one per item: ${F.choices.map(c => c.label).join(" / ")}. Click again to clear.`;
+  $("#instructions").textContent = (F.instructions ? F.instructions + "\n" : "") + how + " " +
+    (F.submit_hint || "Everything autosaves; press Submit when you're done.");
+  if (F.input === "choice") $("#keyhint").innerHTML = "Hover a row and press " + F.choices.map((c, i) => `<kbd>${i + 1}</kbd> ${esc(c.label)}`).join(" ") + " <kbd>0</kbd> clear";
+  const show = $("#show");
+  show.innerHTML = `<option value="all">Show all</option><option value="unanswered">Unanswered</option><option value="answered">Answered</option>` +
+    (F.input !== "text" ? F.choices.map(c => `<option value="c:${esc(c.id)}">Only: ${esc(c.label)}</option>`).join("") : "") +
+    `<option value="sugg">Claude's suggestions</option><option value="notes">With notes</option><option value="outcome">With outcome</option>`;
+  $("#general").value = resp.general_note || "";
   render(); banner();
 }
 
 function render() {
   const sort = $("#sort").value, root = $("#groups"); root.innerHTML = "";
-  ITEMS.groups.forEach((g, gi) => {
-    const sec = document.createElement("section"); sec.dataset.g = gi;
+  F.groups.forEach((g, gi) => {
+    const sec = document.createElement("section");
     if (g.collapsed) sec.classList.add("collapsed");
-    const hasSugg = g.items.some(i => i.suggested);
-    sec.innerHTML = `<div class="ghead"><span class="chev">▾</span><h2>${esc(g.name)}</h2><span class="gcount"></span>
-      <span class="gtools">${hasSugg ? '<button data-act="sugg">Tick suggested</button>' : ""}<button data-act="all">Tick all shown</button><button data-act="none">Clear</button></span></div>
+    const ch = choicesOf(g), hasSugg = g.items.some(i => i.suggested);
+    let tools = "";
+    if (F.input === "choice") tools = `<select data-act="set"><option value="">Set all shown to…</option>${ch.map(c => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join("")}</select>`;
+    if (F.input === "check") tools = `<button data-act="all">Tick all shown</button>`;
+    if (hasSugg && F.input !== "text") tools = `<button data-act="sugg">Apply suggestions</button>` + tools;
+    if (F.input !== "text") tools += `<button data-act="none">Clear</button>`;
+    sec.innerHTML = `<div class="ghead"><span class="chev">▾</span><h2>${esc(g.name)}</h2><span class="gcount"></span><span class="gtools">${tools}</span></div>
       ${g.description ? `<div class="gdesc">${esc(g.description)}</div>` : ""}<div class="gbody"></div><div class="empty">Nothing matches the filter.</div>`;
-    sec.querySelector(".ghead").addEventListener("click", e => { if (!e.target.closest("button")) sec.classList.toggle("collapsed"); });
+    sec.querySelector(".ghead").addEventListener("click", e => { if (!e.target.closest(".gtools")) sec.classList.toggle("collapsed"); });
     sec.querySelectorAll(".gtools button").forEach(b => b.addEventListener("click", () => groupAct(sec, g, b.dataset.act)));
+    const sel = sec.querySelector(".gtools select");
+    if (sel) sel.addEventListener("change", () => { if (sel.value) groupAct(sec, g, "set", sel.value); sel.value = ""; });
     let list = g.items.slice();
     if (sort === "name") list.sort((a, b) => a.label.localeCompare(b.label));
     if (sort === "size") list.sort((a, b) => (b.size_bytes ?? -1) - (a.size_bytes ?? -1));
     const body = sec.querySelector(".gbody");
-    for (const it of list) body.appendChild(rowEl(it));
+    for (const it of list) body.appendChild(rowEl(it, g));
     root.appendChild(sec);
   });
   applyFilter();
 }
 
-function rowEl(it) {
-  const s = st(it.id), oc = OUTCOMES[it.id];
-  const row = document.createElement("div"); row.className = "row"; row.dataset.id = it.id;
+function suggChoice(it, g) { return it.suggested_choice || F.suggest_choice || (choicesOf(g)[0] || {}).id; }
+
+function rowEl(it, g) {
+  const s = st(it.id), oc = OUTCOMES[it.id], ch = choicesOf(g);
+  const row = document.createElement("div"); row.className = "row" + (F.input === "check" ? " check" : ""); row.dataset.id = it.id;
   const chips = [];
-  if (it.suggested) chips.push(`<span class="chip sugg" title="${esc(typeof it.suggested === "string" ? it.suggested : "")}">Claude suggests${typeof it.suggested === "string" ? ": " + esc(it.suggested) : ""}</span>`);
+  if (it.suggested) {
+    const sc = F.input === "choice" ? ch.find(c => c.id === suggChoice(it, g)) : null;
+    const reason = typeof it.suggested === "string" ? it.suggested : "";
+    chips.push(`<span class="chip sugg">Claude suggests${sc ? " " + esc(sc.label) : ""}${reason ? ": " + esc(reason) : ""}</span>`);
+  }
   for (const [k, v] of Object.entries(it.meta || {})) if (v !== "" && v != null && !k.startsWith("_")) chips.push(`<span class="chip">${esc(k)}: ${esc(v)}</span>`);
   for (const t of it.tags || []) chips.push(`<span class="chip">${esc(t)}</span>`);
   if (oc) chips.push(`<span class="chip out-${esc(oc.state)}">${esc(oc.state)}${oc.text ? ": " + esc(oc.text) : ""}</span>`);
-  row.innerHTML = `<input type="checkbox" ${s.marked ? "checked" : ""} aria-label="${esc(it.label)}">
-    <div><div class="label">${esc(it.label)}</div>${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}${chips.length ? `<div class="chips">${chips.join("")}</div>` : ""}</div>
-    <div class="right"><span class="size">${fmtSize(it.size_bytes)}</span><button class="notebtn ${s.note ? "has" : ""}" title="Add a note">✎ note</button></div>
-    <input class="note" placeholder="Note for Claude about this item" value="${esc(s.note)}">`;
-  const cb = row.querySelector("input[type=checkbox]"), note = row.querySelector("input.note"), nb = row.querySelector(".notebtn");
-  if (s.marked) row.classList.add("marked");
+  const info = `<div><div class="label">${esc(it.label)}</div>${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}${chips.length ? `<div class="chips">${chips.join("")}</div>` : ""}</div>`;
+  let control = "";
+  if (F.input === "choice") {
+    const sc = it.suggested ? suggChoice(it, g) : null;
+    control = `<span class="seg">${ch.map((c, i) => `<button data-c="${esc(c.id)}" class="t-${toneOf(c, i)}${s.choice === c.id ? " on" : ""}${sc === c.id ? " sugg" : ""}" title="${esc(c.hint || c.label)}">${esc(c.label)}</button>`).join("")}</span>`;
+  }
+  const noteBtn = F.input === "text" ? "" : `<button class="notebtn ${s.note ? "has" : ""}" title="Add a note">✎ note</button>`;
+  row.innerHTML = (F.input === "check" ? `<input type="checkbox" ${s.choice ? "checked" : ""} aria-label="${esc(it.label)}">` : "") + info +
+    `<div class="right"><span class="size">${fmtSize(it.size_bytes)}</span>${control}${noteBtn}</div>` +
+    (F.input === "text" ? `<textarea class="answer" placeholder="${esc(it.placeholder || "Your answer")}">${esc(s.value)}</textarea>`
+                        : `<textarea class="note" rows="1" placeholder="Note for Claude about this item">${esc(s.note)}</textarea>`);
+  paint(row, ch);
+  if (F.input === "check") {
+    const cb = row.querySelector("input[type=checkbox]");
+    cb.addEventListener("change", () => { s.choice = cb.checked ? ch[0].id : null; paint(row, ch); changed(); });
+    row.querySelector(".label").addEventListener("click", () => cb.click());
+  }
+  row.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setChoice(row, ch, s.choice === b.dataset.c ? null : b.dataset.c)));
+  const nb = row.querySelector(".notebtn"), note = row.querySelector(".note"), ans = row.querySelector(".answer");
   if (s.note) row.classList.add("noteopen");
-  cb.addEventListener("change", () => { s.marked = cb.checked; row.classList.toggle("marked", s.marked); changed(); });
-  row.querySelector(".label").addEventListener("click", () => cb.click());
-  nb.addEventListener("click", () => { row.classList.toggle("noteopen"); if (row.classList.contains("noteopen")) note.focus(); });
-  note.addEventListener("input", () => { s.note = note.value; nb.classList.toggle("has", !!s.note); changed(); });
-  row._item = it;
+  if (nb) nb.addEventListener("click", () => { row.classList.toggle("noteopen"); if (row.classList.contains("noteopen")) note.focus(); });
+  if (note) note.addEventListener("input", () => { s.note = note.value; nb.classList.toggle("has", !!s.note); changed(); });
+  if (ans) ans.addEventListener("input", () => { s.value = ans.value; changed(); });
+  row.addEventListener("mouseenter", () => { HOVER = row; row.classList.add("hover"); });
+  row.addEventListener("mouseleave", () => { if (HOVER === row) HOVER = null; row.classList.remove("hover"); });
+  row._item = it; row._ch = ch;
   return row;
+}
+
+function paint(row, ch) {
+  const s = st(row.dataset.id);
+  row.className = row.className.replace(/\br-\w+/g, "").trim();
+  const i = ch.findIndex(c => c.id === s.choice);
+  if (i >= 0) row.classList.add("r-" + toneOf(ch[i], i));
+  row.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.c === s.choice));
+  const cb = row.querySelector("input[type=checkbox]"); if (cb) cb.checked = !!s.choice;
+}
+
+function setChoice(row, ch, cid, quiet) {
+  st(row.dataset.id).choice = cid; paint(row, ch); if (!quiet) changed();
 }
 
 function visible(row) {
   const it = row._item, s = st(it.id), q = $("#q").value.trim().toLowerCase(), show = $("#show").value;
   if (q) {
-    const hay = [it.label, it.detail, it.id, ...(it.tags || []), ...Object.values(it.meta || {}), s.note].join(" ").toLowerCase();
+    const hay = [it.label, it.detail, it.id, ...(it.tags || []), ...Object.values(it.meta || {}), s.note, s.value, typeof it.suggested === "string" ? it.suggested : ""].join(" ").toLowerCase();
     if (!q.split(/\s+/).every(w => hay.includes(w))) return false;
   }
-  if (show === "marked" && !s.marked) return false;
-  if (show === "unmarked" && s.marked) return false;
+  if (show === "unanswered" && answered(it.id)) return false;
+  if (show === "answered" && !answered(it.id)) return false;
+  if (show.startsWith("c:") && s.choice !== show.slice(2)) return false;
   if (show === "sugg" && !it.suggested) return false;
   if (show === "notes" && !s.note) return false;
   if (show === "outcome" && !OUTCOMES[it.id]) return false;
@@ -197,28 +272,29 @@ function visible(row) {
 }
 
 function applyFilter() {
-  let total = 0, marked = 0;
+  let total = 0, done = 0; const per = {};
   document.querySelectorAll("section").forEach(sec => {
-    let shown = 0, gm = 0, gt = 0;
+    let shown = 0, ga = 0, gt = 0;
     sec.querySelectorAll(".row").forEach(r => {
       const v = visible(r); r.classList.toggle("hidden", !v); if (v) shown++;
-      gt++; if (st(r.dataset.id).marked) gm++;
+      gt++; if (answered(r.dataset.id)) { ga++; const c = st(r.dataset.id).choice; if (c) per[c] = (per[c] || 0) + 1; }
     });
-    total += gt; marked += gm;
-    sec.querySelector(".gcount").textContent = `${gm ? gm + " ticked · " : ""}${gt} items`;
+    total += gt; done += ga;
+    sec.querySelector(".gcount").textContent = `${ga}/${gt} answered`;
     sec.querySelector(".empty").style.display = shown ? "none" : "block";
   });
-  $("#counter").textContent = `${marked} / ${total} ticked`;
+  const chips = F.input === "text" ? [] : F.choices.map((c, i) => per[c.id] ? `<span class="cnt t-${toneOf(c, i)}">${esc(c.label)} ${per[c.id]}</span>` : "");
+  $("#counts").innerHTML = chips.join("") + `<span class="cnt">${done}/${total} answered</span>`;
 }
 
-function groupAct(sec, g, act) {
+function groupAct(sec, g, act, cid) {
   sec.querySelectorAll(".row").forEach(r => {
     if (r.classList.contains("hidden") && act !== "none") return;
-    const s = st(r.dataset.id), cb = r.querySelector("input[type=checkbox]");
-    if (act === "all") s.marked = true;
-    if (act === "none") s.marked = false;
-    if (act === "sugg" && r._item.suggested) s.marked = true;
-    cb.checked = s.marked; r.classList.toggle("marked", s.marked);
+    const ch = r._ch;
+    if (act === "none") setChoice(r, ch, null, true);
+    if (act === "all") setChoice(r, ch, ch[0].id, true);
+    if (act === "set") setChoice(r, ch, cid, true);
+    if (act === "sugg" && r._item.suggested && !st(r.dataset.id).choice) setChoice(r, ch, suggChoice(r._item, g), true);
   });
   changed();
 }
@@ -231,13 +307,12 @@ function changed() {
 }
 
 async function save(submit) {
-  clearTimeout(saveTimer);
-  STATE.general_note = $("#general").value;
+  clearTimeout(saveTimer); saveTimer = null;
   const items = {};
-  for (const [k, v] of Object.entries(STATE.items)) if (v.marked || (v.note || "").trim()) items[k] = v;
+  for (const [k, v] of Object.entries(ANS)) if (v.choice || (v.note || "").trim() || (v.value || "").trim()) items[k] = v;
   try {
     const r = await fetch("/api/response", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, general_note: STATE.general_note, submit }) });
+      body: JSON.stringify({ items, general_note: $("#general").value, submit }) });
     const d = await r.json(); if (!d.ok) throw new Error(d.error);
     STATUS = d.status;
     $("#save").textContent = "saved " + new Date().toLocaleTimeString();
@@ -249,14 +324,14 @@ async function save(submit) {
 
 function banner() {
   const b = $("#banner");
-  if (STATUS === "submitted") { b.className = "banner show ok"; b.textContent = "Submitted. Tell Claude you're done (or it may already be watching). You can keep editing; that reopens it until you Submit again."; }
-  else if (STATUS === "draft" && Object.keys(OUTCOMES).length) { b.className = "banner show warn"; b.textContent = "Claude has recorded outcomes on some items (see the coloured tags). Changes since then need another Submit."; }
+  if (STATUS === "submitted") { b.className = "banner show ok"; b.textContent = "Submitted. Claude picks it up from here. You can keep editing; that reopens it until you Submit again."; }
+  else if (STATUS === "draft" && Object.keys(OUTCOMES).length) { b.className = "banner show warn"; b.textContent = "Claude has recorded outcomes on some items (coloured tags). Changes since then need another Submit."; }
   else b.className = "banner";
 }
 
 async function pollOutcomes() {
   try {
-    const r = await fetch("/api/outcomes"); const oc = await r.json();
+    const oc = await (await fetch("/api/outcomes")).json();
     if (JSON.stringify(oc) !== JSON.stringify(OUTCOMES)) { OUTCOMES = oc; render(); banner(); }
   } catch (e) {}
 }
@@ -268,7 +343,15 @@ $("#general").addEventListener("input", changed);
 $("#expand").addEventListener("click", () => document.querySelectorAll("section").forEach(s => s.classList.remove("collapsed")));
 $("#collapse").addEventListener("click", () => document.querySelectorAll("section").forEach(s => s.classList.add("collapsed")));
 $("#submit").addEventListener("click", () => save(true));
-document.addEventListener("keydown", e => { if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") { e.preventDefault(); $("#q").focus(); } });
+document.addEventListener("keydown", e => {
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+  if (e.key === "/" && !typing) { e.preventDefault(); $("#q").focus(); return; }
+  if (typing || !HOVER || F.input !== "choice" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const n = parseInt(e.key, 10);
+  if (Number.isNaN(n)) return;
+  if (n === 0) setChoice(HOVER, HOVER._ch, null);
+  else if (HOVER._ch[n - 1]) setChoice(HOVER, HOVER._ch, HOVER._ch[n - 1].id);
+});
 window.addEventListener("beforeunload", () => { if (saveTimer) save(false); });
 load(); setInterval(pollOutcomes, 5000);
 </script>
