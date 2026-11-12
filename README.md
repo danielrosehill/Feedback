@@ -7,6 +7,8 @@ free-text reply. The form has search, filters, per-item notes, "Claude suggests"
 keys. Answers autosave to a JSON file that Claude reads back and acts on. Claude then writes an
 outcome for each item, which the open page shows.
 
+![The software-review form part-way through: Remove / Keep for now / Ask me per item, with per-answer counts, filters and number-key hints](docs/screenshot.png)
+
 ```
 template / library form ─┐
 Claude ──items.json──────┴▶ feedback-panel new ──▶ browser form (answer, note, Submit)
