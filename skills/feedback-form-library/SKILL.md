@@ -5,7 +5,7 @@ description: Daniel's library of saved feedback forms - forms that worked well e
 
 # Feedback form library
 
-The library is `library/<name>/` in
+The library is `library/<category>/<name>/` (e.g. `library/system-maintenance/software-review`; `z formlib` goes there) in
 `~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel-Templates`
 (repo `danielrosehill/Feedback-Panel-Templates`). Each entry holds:
 
@@ -40,8 +40,9 @@ When Daniel says to keep a form, or answers yes to the "keep this form?" offer:
 feedback-panel save <session> <name> [--generator 'cmd writing items.json to "$OUT"'] [--description "one line"]
 ```
 
-- `<name>` is lowercase-kebab and names the task (`software-review`, `plugin-prune`,
-  `repo-archive`).
+- `<name>` is `<category>/<task>` in lowercase-kebab (`system-maintenance/btrfs-snapshots`,
+  `plugins/prune`). Reuse an existing category where one fits; each category has a README
+  table of its forms (add a row).
 - `save` writes `form.json` (keeping `{host}`/`{date}` placeholders where they came from a
   template), the `page.html` if there is one, a 3-item `example-items.json`, and a skeleton
   `recipe.md`.
@@ -59,7 +60,7 @@ Then **fill in `recipe.md` yourself while you still have the context**:
 Finally commit and push with explicit paths:
 
 ```bash
-git -C <templates repo> add library/<name>
+git -C <templates repo> add library/<category>
 git -C <templates repo> commit -m "library: <name>"
 git -C <templates repo> push
 ```

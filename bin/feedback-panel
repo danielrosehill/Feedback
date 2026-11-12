@@ -32,7 +32,8 @@ Commands:
   templates                                   list templates and saved library forms
   template <name>                             print a template's form.json and recipe.md
   save <session> <name> [--generator CMD] [--description TEXT] [--force]
-                                              keep this session's form in library/<name>/
+                                              keep this session's form in library/<name>/ (name may
+                                              be nested: system-maintenance/btrfs-snapshots)
 
 <session> may be a path, a directory name under the sessions dir, a unique substring of one, or
 'latest' (the default). Template names may be prefixed 'library:' or 'templates:' to disambiguate.
@@ -151,6 +152,14 @@ def validate(items):
     return len(seen)
 
 
+def forms(kind):
+    """(relative path, dir) for every form under templates/ or library/, nested folders included."""
+    base = TEMPLATES / kind
+    if not base.exists():
+        return []
+    return sorted((str(f.parent.relative_to(base)), f.parent) for f in base.rglob("form.json"))
+
+
 def find_template(name):
     kinds = ("library", "templates")
     if ":" in name:
@@ -160,7 +169,18 @@ def find_template(name):
         d = TEMPLATES / k / name
         if (d / "form.json").exists():
             return d
+    # bare leaf name: library/system-maintenance/software-review answers to "software-review"
+    hits = [d for k in kinds for rel, d in forms(k) if rel.split("/")[-1] == name]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        die(f"{name!r} is ambiguous: " + ", ".join(str(h.relative_to(TEMPLATES)) for h in hits))
     die(f"no template {name!r} in {TEMPLATES} (try: feedback-panel templates)")
+
+
+def template_ref(tdir):
+    kind, rel = str(tdir.relative_to(TEMPLATES)).split("/", 1)
+    return f"{kind}:{rel}"
 
 
 def fill(s, ctx):
@@ -180,7 +200,7 @@ def apply_template(items, tdir):
         items[k] = fill(form[k], ctx)
     if form.get("input") in ("choice", "text"):
         items.pop("mark_label", None)
-    items["_template"] = f"{tdir.parent.name}:{tdir.name}"
+    items["_template"] = template_ref(tdir)
     items["_template_form"] = form
     return form
 
@@ -500,16 +520,14 @@ def cmd_templates(a):
     if not TEMPLATES.exists():
         die(f"templates repo not found at {TEMPLATES} (gh repo clone danielrosehill/Feedback-Panel-Templates {TEMPLATES})")
     for kind in ("templates", "library"):
-        d = TEMPLATES / kind
-        if not d.exists():
+        fl = forms(kind)
+        if not fl:
             continue
         print(f"## {kind}")
-        for t in sorted(d.iterdir()):
+        for rel, t in fl:
             f = read_json(t / "form.json")
-            if not f:
-                continue
             opts = " / ".join(c["label"] for c in f.get("choices", [])) or f.get("input", "check")
-            print(f"  {t.name:26} {opts:42} {f.get('description', '')}")
+            print(f"  {rel:40} {opts:34} {f.get('description', '')}")
 
 
 def cmd_template(a):
@@ -523,12 +541,12 @@ def cmd_template(a):
 def cmd_save(a):
     sess = resolve(a.session)
     items = read_json(sess / "items.json")
-    dest = TEMPLATES / "library" / slugify(a.name)
+    dest = TEMPLATES / "library" / "/".join(slugify(part) for part in a.name.split("/") if part)
     if (dest / "form.json").exists() and not a.force:
         die(f"{dest} exists; pass --force to update it")
     dest.mkdir(parents=True, exist_ok=True)
     base = items.get("_template_form") or {}
-    form = {"name": dest.name, "description": a.description or base.get("description") or items.get("title", "")}
+    form = {"name": str(dest.relative_to(TEMPLATES / "library")), "description": a.description or base.get("description") or items.get("title", "")}
     ctx = {"host": socket.gethostname(), "date": f"{dt.date.today():%Y-%m-%d}"}
     for k in FORM_KEYS:
         v = items.get(k, base.get(k))
