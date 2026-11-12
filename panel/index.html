@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feedback Panel</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f6f4; --card: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e2de;
+  --accent: #2f6fde; --accent-soft: #e6eefc; --mark: #c4352b; --mark-soft: #fbe9e7;
+  --sugg: #9a6b00; --sugg-soft: #fff4d6; --ok: #2e7d32; --ok-soft: #e5f3e6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a; --card: #202024; --fg: #ececef; --muted: #9a9aa3; --line: #34343a;
+    --accent: #7aa7ff; --accent-soft: #23304a; --mark: #ff7b6e; --mark-soft: #3a2422;
+    --sugg: #f0c45a; --sugg-soft: #3a3120; --ok: #7bd389; --ok-soft: #1f3424;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line); padding: 12px 16px; }
+.top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; flex: 1 1 auto; }
+.instructions { color: var(--muted); margin: 6px 0 0; max-width: 900px; white-space: pre-wrap; }
+.controls { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+input[type=search], select, textarea, input.note {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
+input[type=search] { flex: 1 1 260px; min-width: 0; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.counter { font-weight: 600; }
+.save { color: var(--muted); font-size: 12px; min-width: 110px; text-align: right; }
+.save.err { color: var(--mark); }
+.banner { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 13px; display: none; }
+.banner.show { display: block; }
+.banner.ok { background: var(--ok-soft); color: var(--ok); }
+.banner.warn { background: var(--sugg-soft); color: var(--sugg); }
+main { padding: 12px 16px 80px; max-width: 1200px; margin: 0 auto; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+.ghead { display: flex; gap: 8px; align-items: center; padding: 10px 12px; cursor: pointer; user-select: none; flex-wrap: wrap; }
+.ghead h2 { font-size: 15px; margin: 0; flex: 1 1 auto; }
+.ghead .chev { transition: transform .15s; display: inline-block; width: 14px; }
+section.collapsed .chev { transform: rotate(-90deg); }
+section.collapsed .gbody { display: none; }
+.gdesc { color: var(--muted); padding: 0 12px 8px 34px; margin-top: -4px; }
+.gtools { display: flex; gap: 6px; }
+.gtools button { padding: 3px 8px; font-size: 12px; }
+.gcount { color: var(--muted); font-size: 12px; }
+.row { display: grid; grid-template-columns: 26px 1fr auto; gap: 4px 8px; padding: 7px 12px; border-top: 1px solid var(--line); align-items: start; }
+.row.marked { background: var(--mark-soft); }
+.row.hidden { display: none; }
+.row input[type=checkbox] { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--mark); cursor: pointer; }
+.label { font-weight: 550; word-break: break-word; cursor: pointer; }
+.detail { color: var(--muted); font-size: 13px; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.detail:hover { -webkit-line-clamp: unset; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.chip { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.chip.sugg { background: var(--sugg-soft); color: var(--sugg); border-color: transparent; }
+.chip.out-done { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.chip.out-failed { background: var(--mark-soft); color: var(--mark); border-color: transparent; }
+.chip.out-skipped { color: var(--muted); }
+.right { display: flex; gap: 6px; align-items: center; }
+.size { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.notebtn { padding: 2px 7px; font-size: 12px; }
+.notebtn.has { border-color: var(--accent); color: var(--accent); }
+input.note { grid-column: 2 / 4; width: 100%; display: none; }
+.row.noteopen input.note { display: block; }
+.general { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.general textarea { width: 100%; min-height: 70px; resize: vertical; }
+.empty { color: var(--muted); padding: 10px 12px; font-style: italic; display: none; }
+kbd { font-size: 11px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+@media (max-width: 600px) { .row { grid-template-columns: 24px 1fr; } .right { grid-column: 2; } input.note { grid-column: 1 / 3; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1 id="title">Loading…</h1>
+    <span class="counter" id="counter"></span>
+    <span class="save" id="save"></span>
+    <button class="primary" id="submit">Submit</button>
+  </div>
+  <p class="instructions" id="instructions"></p>
+  <div class="controls">
+    <input type="search" id="q" placeholder="Filter (press / )">
+    <select id="show">
+      <option value="all">Show all</option>
+      <option value="marked">Ticked only</option>
+      <option value="unmarked">Unticked only</option>
+      <option value="sugg">Claude's suggestions</option>
+      <option value="notes">With notes</option>
+      <option value="outcome">With outcome</option>
+    </select>
+    <select id="sort">
+      <option value="given">Given order</option>
+      <option value="name">Name</option>
+      <option value="size">Size</option>
+    </select>
+    <button id="expand">Expand all</button>
+    <button id="collapse">Collapse all</button>
+  </div>
+  <div class="banner" id="banner"></div>
+</header>
+<main>
+  <div id="groups"></div>
+  <div class="general">
+    <strong>General note</strong> <span class="detail">— anything that applies to the whole list</span>
+    <textarea id="general"></textarea>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let ITEMS, STATE = { items: {}, general_note: "" }, OUTCOMES = {}, STATUS = "untouched", saveTimer = null;
+
+function fmtSize(b) {
+  if (b == null) return "";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (b >= 10 || i === 0 ? b.toFixed(0) : b.toFixed(1)) + " " + u[i];
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function st(id) { return STATE.items[id] || (STATE.items[id] = { marked: false, note: "" }); }
+
+async function load() {
+  const r = await fetch("/api/session"); const d = await r.json();
+  ITEMS = d.items; OUTCOMES = d.outcomes || {};
+  const resp = d.response || {};
+  STATE.items = resp.items || {}; STATE.general_note = resp.general_note || ""; STATUS = resp.status || "untouched";
+  document.title = ITEMS.title || "Feedback Panel";
+  $("#title").textContent = ITEMS.title || "Feedback Panel";
+  $("#instructions").textContent = (ITEMS.instructions || "") + (ITEMS.instructions ? "\n" : "") +
+    `Tick = ${ITEMS.mark_label || "selected"}. Everything autosaves; press Submit when you're done and tell Claude.`;
+  $("#general").value = STATE.general_note;
+  render(); banner();
+}
+
+function render() {
+  const sort = $("#sort").value, root = $("#groups"); root.innerHTML = "";
+  ITEMS.groups.forEach((g, gi) => {
+    const sec = document.createElement("section"); sec.dataset.g = gi;
+    if (g.collapsed) sec.classList.add("collapsed");
+    const hasSugg = g.items.some(i => i.suggested);
+    sec.innerHTML = `<div class="ghead"><span class="chev">▾</span><h2>${esc(g.name)}</h2><span class="gcount"></span>
+      <span class="gtools">${hasSugg ? '<button data-act="sugg">Tick suggested</button>' : ""}<button data-act="all">Tick all shown</button><button data-act="none">Clear</button></span></div>
+      ${g.description ? `<div class="gdesc">${esc(g.description)}</div>` : ""}<div class="gbody"></div><div class="empty">Nothing matches the filter.</div>`;
+    sec.querySelector(".ghead").addEventListener("click", e => { if (!e.target.closest("button")) sec.classList.toggle("collapsed"); });
+    sec.querySelectorAll(".gtools button").forEach(b => b.addEventListener("click", () => groupAct(sec, g, b.dataset.act)));
+    let list = g.items.slice();
+    if (sort === "name") list.sort((a, b) => a.label.localeCompare(b.label));
+    if (sort === "size") list.sort((a, b) => (b.size_bytes ?? -1) - (a.size_bytes ?? -1));
+    const body = sec.querySelector(".gbody");
+    for (const it of list) body.appendChild(rowEl(it));
+    root.appendChild(sec);
+  });
+  applyFilter();
+}
+
+function rowEl(it) {
+  const s = st(it.id), oc = OUTCOMES[it.id];
+  const row = document.createElement("div"); row.className = "row"; row.dataset.id = it.id;
+  const chips = [];
+  if (it.suggested) chips.push(`<span class="chip sugg" title="${esc(typeof it.suggested === "string" ? it.suggested : "")}">Claude suggests${typeof it.suggested === "string" ? ": " + esc(it.suggested) : ""}</span>`);
+  for (const [k, v] of Object.entries(it.meta || {})) if (v !== "" && v != null && !k.startsWith("_")) chips.push(`<span class="chip">${esc(k)}: ${esc(v)}</span>`);
+  for (const t of it.tags || []) chips.push(`<span class="chip">${esc(t)}</span>`);
+  if (oc) chips.push(`<span class="chip out-${esc(oc.state)}">${esc(oc.state)}${oc.text ? ": " + esc(oc.text) : ""}</span>`);
+  row.innerHTML = `<input type="checkbox" ${s.marked ? "checked" : ""} aria-label="${esc(it.label)}">
+    <div><div class="label">${esc(it.label)}</div>${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}${chips.length ? `<div class="chips">${chips.join("")}</div>` : ""}</div>
+    <div class="right"><span class="size">${fmtSize(it.size_bytes)}</span><button class="notebtn ${s.note ? "has" : ""}" title="Add a note">✎ note</button></div>
+    <input class="note" placeholder="Note for Claude about this item" value="${esc(s.note)}">`;
+  const cb = row.querySelector("input[type=checkbox]"), note = row.querySelector("input.note"), nb = row.querySelector(".notebtn");
+  if (s.marked) row.classList.add("marked");
+  if (s.note) row.classList.add("noteopen");
+  cb.addEventListener("change", () => { s.marked = cb.checked; row.classList.toggle("marked", s.marked); changed(); });
+  row.querySelector(".label").addEventListener("click", () => cb.click());
+  nb.addEventListener("click", () => { row.classList.toggle("noteopen"); if (row.classList.contains("noteopen")) note.focus(); });
+  note.addEventListener("input", () => { s.note = note.value; nb.classList.toggle("has", !!s.note); changed(); });
+  row._item = it;
+  return row;
+}
+
+function visible(row) {
+  const it = row._item, s = st(it.id), q = $("#q").value.trim().toLowerCase(), show = $("#show").value;
+  if (q) {
+    const hay = [it.label, it.detail, it.id, ...(it.tags || []), ...Object.values(it.meta || {}), s.note].join(" ").toLowerCase();
+    if (!q.split(/\s+/).every(w => hay.includes(w))) return false;
+  }
+  if (show === "marked" && !s.marked) return false;
+  if (show === "unmarked" && s.marked) return false;
+  if (show === "sugg" && !it.suggested) return false;
+  if (show === "notes" && !s.note) return false;
+  if (show === "outcome" && !OUTCOMES[it.id]) return false;
+  return true;
+}
+
+function applyFilter() {
+  let total = 0, marked = 0;
+  document.querySelectorAll("section").forEach(sec => {
+    let shown = 0, gm = 0, gt = 0;
+    sec.querySelectorAll(".row").forEach(r => {
+      const v = visible(r); r.classList.toggle("hidden", !v); if (v) shown++;
+      gt++; if (st(r.dataset.id).marked) gm++;
+    });
+    total += gt; marked += gm;
+    sec.querySelector(".gcount").textContent = `${gm ? gm + " ticked · " : ""}${gt} items`;
+    sec.querySelector(".empty").style.display = shown ? "none" : "block";
+  });
+  $("#counter").textContent = `${marked} / ${total} ticked`;
+}
+
+function groupAct(sec, g, act) {
+  sec.querySelectorAll(".row").forEach(r => {
+    if (r.classList.contains("hidden") && act !== "none") return;
+    const s = st(r.dataset.id), cb = r.querySelector("input[type=checkbox]");
+    if (act === "all") s.marked = true;
+    if (act === "none") s.marked = false;
+    if (act === "sugg" && r._item.suggested) s.marked = true;
+    cb.checked = s.marked; r.classList.toggle("marked", s.marked);
+  });
+  changed();
+}
+
+function changed() {
+  applyFilter();
+  if (STATUS === "submitted") { STATUS = "draft"; banner(); }
+  $("#save").textContent = "unsaved…"; $("#save").classList.remove("err");
+  clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false), 500);
+}
+
+async function save(submit) {
+  clearTimeout(saveTimer);
+  STATE.general_note = $("#general").value;
+  const items = {};
+  for (const [k, v] of Object.entries(STATE.items)) if (v.marked || (v.note || "").trim()) items[k] = v;
+  try {
+    const r = await fetch("/api/response", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, general_note: STATE.general_note, submit }) });
+    const d = await r.json(); if (!d.ok) throw new Error(d.error);
+    STATUS = d.status;
+    $("#save").textContent = "saved " + new Date().toLocaleTimeString();
+    banner();
+  } catch (e) {
+    $("#save").textContent = "save failed — is the server running?"; $("#save").classList.add("err");
+  }
+}
+
+function banner() {
+  const b = $("#banner");
+  if (STATUS === "submitted") { b.className = "banner show ok"; b.textContent = "Submitted. Tell Claude you're done (or it may already be watching). You can keep editing; that reopens it until you Submit again."; }
+  else if (STATUS === "draft" && Object.keys(OUTCOMES).length) { b.className = "banner show warn"; b.textContent = "Claude has recorded outcomes on some items (see the coloured tags). Changes since then need another Submit."; }
+  else b.className = "banner";
+}
+
+async function pollOutcomes() {
+  try {
+    const r = await fetch("/api/outcomes"); const oc = await r.json();
+    if (JSON.stringify(oc) !== JSON.stringify(OUTCOMES)) { OUTCOMES = oc; render(); banner(); }
+  } catch (e) {}
+}
+
+$("#q").addEventListener("input", applyFilter);
+$("#show").addEventListener("change", applyFilter);
+$("#sort").addEventListener("change", render);
+$("#general").addEventListener("input", changed);
+$("#expand").addEventListener("click", () => document.querySelectorAll("section").forEach(s => s.classList.remove("collapsed")));
+$("#collapse").addEventListener("click", () => document.querySelectorAll("section").forEach(s => s.classList.add("collapsed")));
+$("#submit").addEventListener("click", () => save(true));
+document.addEventListener("keydown", e => { if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") { e.preventDefault(); $("#q").focus(); } });
+window.addEventListener("beforeunload", () => { if (saveTimer) save(false); });
+load(); setInterval(pollOutcomes, 5000);
+</script>
+</body>
+</html>

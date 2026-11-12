@@ -1,0 +1,15 @@
+{
+  "title": "Demo: which of these should go?",
+  "instructions": "Tick anything you want removed. Add a note if you want something else done with it.",
+  "mark_label": "Remove",
+  "groups": [
+    {"name": "Desktop apps", "description": "Installed .deb packages with a launcher.",
+     "items": [
+       {"id": "apt:gimp", "label": "GIMP", "detail": "Image editor", "size_bytes": 120000000, "meta": {"source": "apt"}},
+       {"id": "apt:hexchat", "label": "HexChat", "detail": "IRC client", "size_bytes": 3000000, "suggested": "no launches since 2025"}
+     ]},
+    {"name": "Python environments", "items": [
+       {"id": "venv:/home/me/old/.venv", "label": "~/old/.venv", "size_bytes": 900000000, "meta": {"python": "3.10"}}
+    ]}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "feedback-panel",
+  "version": "0.1.0",
+  "description": "Bulk feedback from Daniel on long lists: Claude writes items as JSON, feedback-panel serves a local tick-box page (search, filters, per-item notes, Claude's suggestion tags, autosave, Submit), Claude reads the ticks back, acts on them and writes per-item outcomes the page shows. For reviews too big for a terminal multiple-choice question: packages to remove, plugins, repos, files, skills, MCP servers.",
+  "author": {
+    "name": "Daniel Rosehill",
+    "url": "https://github.com/danielrosehill"
+  },
+  "repository": "https://github.com/danielrosehill/Feedback-Panel",
+  "license": "MIT",
+  "keywords": ["feedback", "checklist", "review", "triage", "html", "bulk-selection", "human-in-the-loop"]
+}
