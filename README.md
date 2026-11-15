@@ -26,6 +26,28 @@ Claude ──feedback-panel outcome──▶ outcomes.json ──▶ page shows 
   - `library/`: forms worth keeping, each with a recipe for rebuilding its items.
   - `feedback-panel save` puts a good session into the library.
 
+## Diagram review
+
+For architecture diagrams, network maps and ER diagrams: the form *is* the diagram. Any Graphviz
+`.dot` file becomes a pan-and-zoom page where every box, connection and zone (cluster) is
+clickable. Pick an answer (the `architecture-review` template: **Fine / Rethink / Move / Remove /
+Explain**) and/or write a note; marked elements get a coloured outline and a badge, the side panel
+lists what each element connects to, and a running list of your comments jumps back to each one.
+
+![Diagram review of the Home Canopy poster: the gateway marked Move with a note, a connection and the Cloudflare zone marked Rethink, catalogue selected with its connections listed](docs/diagram-review.png)
+
+```bash
+feedback-panel diagram a.dot b.dot --font-dir fonts/ -o items.json   # one tab per file
+feedback-panel new items.json --template architecture-review
+```
+
+- Item ids are `<file-stem>:node:<name>`, `<file-stem>:edge:<a>-><b>` (`#2`, `#3` for repeats) and
+  `<file-stem>:zone:<cluster_name>`, the names from the `.dot` source, so answers map straight back
+  to it.
+- `--font-dir` makes `dot` measure text with those fonts and embeds them in the page, so labels
+  fit their boxes as in the PDF. `--skip NAME` leaves nodes out (default: `legend`; it is still drawn).
+- If the `.dot` is generated (by a build script), the edit belongs in the generator, not the `.dot`.
+
 ## Skills
 
 | Skill | For |

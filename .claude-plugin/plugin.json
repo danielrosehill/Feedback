@@ -1,7 +1,7 @@
 {
   "name": "feedback-panel",
-  "version": "0.4.0",
-  "description": "Bulk feedback from Daniel on long lists: Claude writes items as JSON, feedback-panel serves a local form where each item gets an answer from a set (Remove / Keep for now / Ask me, Keep / Archive / Delete, Approve / Revise / Reject, priority, rating), a tick box or free text; search, filters, notes, Claude's suggestion tags, number keys, autosave, Submit. Claude reads the answers, acts, and writes per-item outcomes the page shows. Templates and a library of kept forms (with recipes to rebuild their items) live in Feedback-Panel-Templates; skills feedback-panel, feedback-form-template, feedback-form-library.",
+  "version": "0.5.0",
+  "description": "Bulk feedback from Daniel on long lists: Claude writes items as JSON, feedback-panel serves a local form where each item gets an answer from a set (Remove / Keep for now / Ask me, Keep / Archive / Delete, Approve / Revise / Reject, priority, rating), a tick box or free text; or a clickable Graphviz diagram where every box, connection and zone takes an answer and a note (architecture review); search, filters, notes, Claude's suggestion tags, number keys, autosave, Submit. Claude reads the answers, acts, and writes per-item outcomes the page shows. Templates and a library of kept forms (with recipes to rebuild their items) live in Feedback-Panel-Templates; skills feedback-panel, feedback-form-template, feedback-form-library.",
   "author": {
     "name": "Daniel Rosehill",
     "url": "https://github.com/danielrosehill"
@@ -18,6 +18,9 @@
     "human-in-the-loop",
     "templates",
     "forms",
-    "library"
+    "library",
+    "architecture",
+    "diagram",
+    "graphviz"
   ]
 }

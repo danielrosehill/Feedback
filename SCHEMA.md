@@ -48,6 +48,27 @@ Precedence with `--template`: the template's `input`, `choices`, `mark_label` an
 `suggest_choice` win. For `title`, `instructions` and `submit_hint`, the items file wins when it
 sets them.
 
+# Diagram items (written by `feedback-panel diagram`)
+
+Same shape, plus a top-level `diagrams` list and diagram fields on each item. A session whose
+items carry `diagrams` gets `panel/diagram.html` instead of the list page (unless its template
+ships its own `page`).
+
+```jsonc
+{
+  "diagrams": [ { "id": "home-canopy", "name": "Home Canopy", "source": "/abs/home-canopy.dot",
+                  "svg": "<svg ...>" } ],            // Graphviz SVG; clickable <g> carry data-fp="<item id>"
+  "groups": [ { "name": "Home Canopy: components", "items": [
+    { "id": "home-canopy:node:gateway", "label": "gateway", "detail": "MCPJungle :8080 · ...",
+      "kind": "node",                                 // node | edge | zone
+      "diagram": "home-canopy", "ref": "gateway",     // ref: the name in the .dot source
+      "zone": "home-canopy:zone:cluster_stack",       // innermost enclosing cluster (nodes, zones)
+      "meta": { "diagram": "Home Canopy", "zone": "Canopy stack" } },
+    { "id": "home-canopy:edge:api->gateway", "kind": "edge", "from": "home-canopy:node:api",
+      "to": "home-canopy:node:gateway", "ref": "api->gateway", "detail": "admin REST", ... } ] } ]
+}
+```
+
 # form.json (templates/<name>/, library/<name>/)
 
 `name`, `description`, `use_for`, `title`, `instructions`, `input`, `choices`, `mark_label`,

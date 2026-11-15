@@ -22,6 +22,9 @@ library/<name>/form.json + recipe.md (forms worth keeping, with how to regenerat
 
 Commands:
   new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open] [--port N]
+  diagram <file.dot>... [-o items.json] [--font-dir D] [--label NAME]... [--title T]
+                                              Graphviz diagram(s) -> items for a clickable review:
+                                              every node, connection and zone is an item
   serve <session> [--port N]                  run the server in the foreground
   status [session]                            one-line state
   result [session] [--json] [--new]                 answers grouped by choice, notes, free text
@@ -55,6 +58,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PANEL_HTML = ROOT / "panel" / "index.html"
+DIAGRAM_HTML = ROOT / "panel" / "diagram.html"
 HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
 TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
 FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "suggest_choice", "submit_hint")
@@ -342,6 +346,173 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "panel"
 
 
+# ---------------------------------------------------------------- diagrams
+
+SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
+
+def svg_text(g):
+    return [t.text.strip() for t in g.iter(f"{{{SVG_NS}}}text") if t.text and t.text.strip()]
+
+
+def font_faces(font_dir):
+    """@font-face rules (base64) for every font in font_dir, so the page draws what dot measured."""
+    import base64
+    rules = []
+    for f in sorted(font_dir.iterdir()):
+        if f.suffix.lower() not in (".ttf", ".otf", ".woff", ".woff2"):
+            continue
+        family, weight, style = f.stem, 400, "normal"
+        if shutil.which("fc-scan"):
+            r = subprocess.run(["fc-scan", "--format", "%{family[0]}|%{weight}|%{slant}", str(f)], capture_output=True, text=True)
+            parts = r.stdout.strip().split("|")
+            if r.returncode == 0 and len(parts) == 3 and parts[0]:
+                family = parts[0]
+                fcw = float(parts[1] or 80)  # fontconfig: 80 regular, 180 semibold, 200 bold
+                weight = 700 if fcw >= 195 else 600 if fcw >= 175 else 500 if fcw >= 95 else 300 if fcw < 75 else 400
+                style = "italic" if parts[2] not in ("", "0") else "normal"
+        fmt = {".ttf": "truetype", ".otf": "opentype", ".woff": "woff", ".woff2": "woff2"}[f.suffix.lower()]
+        data = base64.b64encode(f.read_bytes()).decode()
+        rules.append(f'@font-face {{ font-family: "{family}"; font-weight: {weight}; font-style: {style}; '
+                     f'src: url(data:font/{f.suffix[1:].lower()};base64,{data}) format("{fmt}"); }}')
+    return "\n".join(rules)
+
+
+def render_diagram(src, font_dir=None, engine="dot"):
+    """Lay out one Graphviz file; return (svg_root, json0) from a single run so both agree."""
+    import tempfile
+    import xml.etree.ElementTree as ET
+    if not shutil.which(engine):
+        die(f"Graphviz '{engine}' not found; install graphviz")
+    env = dict(os.environ)
+    with tempfile.TemporaryDirectory() as tmp:
+        if font_dir:
+            conf = Path(tmp) / "fonts.conf"
+            conf.write_text(f"<fontconfig><dir>{font_dir}</dir><include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>"
+                            f"<cachedir>{tmp}/fc</cachedir></fontconfig>")
+            env["FONTCONFIG_FILE"] = str(conf)
+        svg_p, js_p = Path(tmp) / "d.svg", Path(tmp) / "d.json"
+        r = subprocess.run([engine, "-Tsvg", "-o", str(svg_p), "-Tjson0", "-o", str(js_p), str(src)],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            die(f"{engine} failed on {src}:\n{r.stderr.strip()}")
+        ET.register_namespace("", SVG_NS)
+        ET.register_namespace("xlink", XLINK_NS)
+        return ET.parse(svg_p).getroot(), json.loads(js_p.read_text())
+
+
+def diagram_items(src, slug, name, font_dir=None, skip=()):
+    """One diagram -> (diagram dict for the page, groups of items: components, connections, zones)."""
+    import xml.etree.ElementTree as ET
+    root, js = render_diagram(src, font_dir)
+    objs = js.get("objects", [])
+    clusters = [o for o in objs if o.get("name", "").startswith("cluster")]
+
+    def members(c):  # every node in a cluster, nested ones included
+        out = set(c.get("nodes", []))
+        for sg in c.get("subgraphs", []):
+            if objs[sg].get("name", "").startswith("cluster"):
+                out |= members(objs[sg])
+        return out
+    cmembers = {c["name"]: members(c) for c in clusters}
+    cparent = {}
+    for c in clusters:  # innermost enclosing cluster of each cluster
+        outer = [o for o in clusters if o is not c and cmembers[c["name"]] < cmembers[o["name"]]]
+        if outer:
+            cparent[c["name"]] = min(outer, key=lambda o: len(cmembers[o["name"]]))["name"]
+    gv_name = {o["_gvid"]: o["name"] for o in objs}
+    zone_of = {}
+    for gvid in gv_name:
+        inside = [c for c in clusters if gvid in cmembers[c["name"]]]
+        if inside:
+            zone_of[gv_name[gvid]] = min(inside, key=lambda c: len(cmembers[c["name"]]))["name"]
+
+    pre = f"{slug}:"
+    labels, comp, conn, zones, zlabel = {}, [], [], [], {}
+    # clusters first so node rows can name their zone by label
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        if g.get("class") == "cluster":
+            title = g.findtext(f"{{{SVG_NS}}}title", "")
+            zlabel[title] = " ".join(svg_text(g)) or title.removeprefix("cluster_").removeprefix("cluster")
+    seen_edges = {}
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        cls = g.get("class")
+        title = g.findtext(f"{{{SVG_NS}}}title", "")
+        if cls == "node":
+            if title in skip:
+                continue
+            txt = svg_text(g)
+            iid = f"{pre}node:{title}"
+            labels[title] = txt[0] if txt else title
+            meta = {"diagram": name}
+            if title in zone_of:
+                meta["zone"] = zlabel.get(zone_of[title], zone_of[title])
+            comp.append({"id": iid, "label": labels[title], "detail": " · ".join(txt[1:]), "kind": "node",
+                         "diagram": slug, "ref": title, "zone": f"{pre}zone:{zone_of[title]}" if title in zone_of else None,
+                         "meta": meta})
+            g.set("data-fp", iid)
+        elif cls == "cluster":
+            iid = f"{pre}zone:{title}"
+            meta = {"diagram": name}
+            if title in cparent:
+                meta["inside"] = zlabel.get(cparent[title], cparent[title])
+            zones.append({"id": iid, "label": zlabel[title], "kind": "zone", "diagram": slug, "ref": title,
+                          "zone": f"{pre}zone:{cparent[title]}" if title in cparent else None, "meta": meta})
+            g.set("data-fp", iid)
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        if g.get("class") != "edge":
+            continue
+        title = g.findtext(f"{{{SVG_NS}}}title", "")
+        m = re.match(r"^(.*?)(->|--)(.*)$", title)
+        if not m:
+            continue
+        a, arrow, b = m.group(1).split(":")[0], m.group(2), m.group(3).split(":")[0]
+        if a in skip or b in skip:
+            continue
+        seen_edges[title] = seen_edges.get(title, 0) + 1
+        iid = f"{pre}edge:{a}{arrow}{b}" + (f"#{seen_edges[title]}" if seen_edges[title] > 1 else "")
+        txt = svg_text(g)
+        conn.append({"id": iid, "label": f"{labels.get(a, a)} {'→' if arrow == '->' else '—'} {labels.get(b, b)}",
+                     "detail": " · ".join(txt), "kind": "edge", "diagram": slug, "ref": title,
+                     "from": f"{pre}node:{a}", "to": f"{pre}node:{b}", "meta": {"diagram": name, "connection": " · ".join(txt)} if txt else {"diagram": name}})
+        g.set("data-fp", iid)
+    if font_dir:
+        style = ET.Element(f"{{{SVG_NS}}}style")
+        style.text = font_faces(font_dir)
+        root.insert(0, style)
+    for attr in ("width", "height"):  # the page sizes it; keep the natural size for fit
+        root.set(f"data-{attr}", root.get(attr, ""))
+    svg = ET.tostring(root, encoding="unicode")
+    groups = [{"name": f"{name}: components", "items": comp},
+              {"name": f"{name}: connections", "items": conn, "collapsed": True},
+              {"name": f"{name}: zones", "items": zones, "collapsed": True}]
+    return {"id": slug, "name": name, "source": str(Path(src).resolve()), "svg": svg}, [g for g in groups if g["items"]]
+
+
+def cmd_diagram(a):
+    names = a.label or []
+    diagrams, groups = [], []
+    font_dir = Path(a.font_dir).expanduser().resolve() if a.font_dir else None
+    for i, f in enumerate(a.files):
+        src = Path(f).expanduser()
+        if not src.exists():
+            die(f"{src} not found")
+        name = names[i] if i < len(names) else re.sub(r"[-_]+", " ", src.stem).strip().title()
+        d, gs = diagram_items(src, slugify(src.stem), name, font_dir, set(a.skip))
+        diagrams.append(d)
+        groups += gs
+    # No default title: the template's title should win unless --title is given.
+    items = ({"title": a.title} if a.title else {}) | {"diagrams": diagrams, "groups": groups}
+    n = validate(items)
+    if a.out:
+        write_json(Path(a.out).expanduser(), items)
+        print(json.dumps({"out": str(Path(a.out).expanduser()), "diagrams": [d["name"] for d in diagrams], "items": n,
+                          "by_kind": {k: sum(1 for _, it in all_items(items) if it["kind"] == k) for k in ("node", "edge", "zone")}}, indent=2))
+    else:
+        print(json.dumps(items, ensure_ascii=False))
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_new(a):
@@ -378,6 +549,8 @@ def cmd_new(a):
     page = (items.get("_template_form") or {}).get("page")
     if page and (tdir / page).exists():
         shutil.copy(tdir / page, sess / "page.html")
+    elif items.get("diagrams"):
+        shutil.copy(DIAGRAM_HTML, sess / "page.html")
     write_json(sess / "items.json", items)
     info = start_background(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
@@ -570,14 +743,15 @@ def cmd_save(a):
         form["generator"] = a.generator
     elif base.get("generator"):
         form["generator"] = base["generator"]
-    if (sess / "page.html").exists():
+    if (sess / "page.html").exists() and not items.get("diagrams"):
         shutil.copy(sess / "page.html", dest / "page.html")
         form["page"] = "page.html"
     form["based_on"] = items.get("_template", "")
     form["saved"] = f"{dt.date.today():%Y-%m-%d}"
     write_json(dest / "form.json", form)
     write_json(dest / "example-items.json", {k: v for k, v in items.items() if not k.startswith("_")} | {
-        "groups": [dict(g, items=g["items"][:3]) for g in items["groups"]]})
+        "groups": [dict(g, items=g["items"][:3]) for g in items["groups"]]}
+        | ({"diagrams": [dict(d, svg="(generated by: feedback-panel diagram)") for d in items["diagrams"]]} if items.get("diagrams") else {}))
     recipe = dest / "recipe.md"
     if not recipe.exists():
         recipe.write_text(f"""# {dest.name}
@@ -609,6 +783,12 @@ def main():
     x = sp.add_parser("new"); x.add_argument("items"); x.add_argument("--template"); x.add_argument("--name")
     x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0)
     x.add_argument("--suggest", help="JSON {item_id: reason | {choice, reason}} merged in as Claude's suggestions"); x.set_defaults(f=cmd_new)
+    x = sp.add_parser("diagram", help="Graphviz file(s) -> items.json for a clickable diagram review")
+    x.add_argument("files", nargs="+"); x.add_argument("-o", "--out"); x.add_argument("--title")
+    x.add_argument("--label", action="append", help="display name per file, in order (default: from the file name)")
+    x.add_argument("--font-dir", help="fonts the diagram uses: dot measures with them and the page embeds them")
+    x.add_argument("--skip", action="append", default=["legend"], help="node names to leave out (default: legend)")
+    x.set_defaults(f=cmd_diagram)
     x = sp.add_parser("serve"); x.add_argument("session"); x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_serve)
     for name, f in (("status", cmd_status), ("open", cmd_open), ("stop", cmd_stop)):
         x = sp.add_parser(name); x.add_argument("session", nargs="?"); x.set_defaults(f=f)

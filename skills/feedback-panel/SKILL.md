@@ -46,6 +46,23 @@ come from the template; don't repeat them in the items file.
   Keep reasons factual ("duplicate: the .deb is installed too", "3 GB, untouched since 2025-04").
   Daniel can press "Apply suggestions" for each group.
 
+### Diagrams: review an architecture element by element
+
+When the thing to review is a diagram (architecture, network, ER, any Graphviz `.dot`), don't
+list its parts: make the diagram the form.
+
+```bash
+feedback-panel diagram a.dot [b.dot ...] [--font-dir DIR] [--label NAME ...] -o items.json
+feedback-panel new items.json --template architecture-review [--suggest s.json]
+```
+
+Every node, edge and cluster becomes an item (`<stem>:node:<name>`, `<stem>:edge:<a>-><b>`,
+`<stem>:zone:<cluster>`); one tab per file. Daniel clicks elements on the diagram, answers
+Fine / Rethink / Move / Remove / Explain and writes notes; a note with no answer is normal here,
+so read `notes_only` in the result as well. Suggestions (`--suggest`) show as tags on the element.
+Act on the diagram's *source*: when the `.dot` is generated, edit the generator, rebuild, and run a
+fresh `diagram` + `new` for the next round.
+
 ## 2. Open it
 
 ```bash

@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagram review</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f6f4; --card: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e2de; --canvas: #eef0ee;
+  --accent: #2f6fde; --accent-soft: #e6eefc;
+  --danger: #c4352b; --danger-soft: #fbe9e7; --warn: #b07a00; --warn-soft: #fff4d6;
+  --ok: #2e7d32; --ok-soft: #e5f3e6; --info: #2f6fde; --info-soft: #e6eefc; --neutral: #55555c; --neutral-soft: #ececea;
+  --note: #8e24aa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a; --card: #202024; --fg: #ececef; --muted: #9a9aa3; --line: #34343a; --canvas: #2a2b2e;
+    --accent: #7aa7ff; --accent-soft: #23304a;
+    --danger-soft: #3a2422; --warn-soft: #3a3120; --ok-soft: #1f3424; --info-soft: #23304a; --neutral-soft: #2c2c31;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+header { background: var(--card); border-bottom: 1px solid var(--line); padding: 8px 14px; }
+.top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 17px; margin: 0; flex: 0 1 auto; }
+.instructions { color: var(--muted); margin: 3px 0 0; font-size: 13px; }
+input[type=search], textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.spacer { flex: 1 1 auto; }
+.save { color: var(--muted); font-size: 12px; min-width: 110px; text-align: right; }
+.save.err { color: var(--danger); }
+.searchwrap { position: relative; flex: 0 1 320px; min-width: 180px; }
+.searchwrap input { width: 100%; }
+.results { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; margin-top: 2px; max-height: 60vh; overflow: auto; display: none; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.results.show { display: block; }
+.results div { padding: 6px 10px; cursor: pointer; border-top: 1px solid var(--line); }
+.results div:first-child { border-top: 0; }
+.results div:hover, .results div.hi { background: var(--accent-soft); }
+.results small { color: var(--muted); }
+.banner { margin-top: 6px; padding: 5px 10px; border-radius: 6px; font-size: 13px; display: none; }
+.banner.show { display: block; }
+.banner.ok { background: var(--ok-soft); color: var(--ok); }
+.banner.warn { background: var(--warn-soft); color: var(--warn); }
+.counts { display: flex; gap: 5px; flex-wrap: wrap; }
+.cnt { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+
+.layout { display: grid; grid-template-columns: 1fr 390px; min-height: 0; }
+.viewer { position: relative; overflow: hidden; background: var(--canvas); cursor: grab; touch-action: none; }
+.viewer.panning { cursor: grabbing; }
+.stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: none; }
+.stage.on { display: block; }
+.tabs { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; gap: 4px; }
+.tabs button { background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.tabs .n { font-size: 11px; opacity: .8; margin-left: 4px; }
+.zoom { position: absolute; bottom: 12px; left: 10px; z-index: 5; display: flex; gap: 4px; align-items: center; }
+.zoom button { background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.12); min-width: 34px; }
+.zoom label { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.legend-hint { position: absolute; bottom: 12px; right: 12px; z-index: 5; color: var(--muted); font-size: 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--bg); }
+
+/* the diagram */
+svg [data-fp] { cursor: pointer; }
+svg g.edge path.hit { fill: none; stroke: transparent; stroke-width: 18px; pointer-events: stroke; }
+svg g.node:hover > :is(path, polygon, ellipse):not(.hit) { stroke: var(--accent); stroke-width: 3px; }
+svg g.edge:hover path.hit { stroke: var(--accent); stroke-opacity: .18; }
+svg g.cluster:hover > :is(path, polygon) { stroke: var(--accent); stroke-width: 3px; }
+svg .m-danger { --tone: var(--danger); } svg .m-warn { --tone: var(--warn); } svg .m-ok { --tone: var(--ok); }
+svg .m-info { --tone: var(--info); } svg .m-neutral { --tone: var(--neutral); } svg .m-note { --tone: var(--note); }
+svg g.node.marked > :is(path, polygon, ellipse):not(.hit) { stroke: var(--tone); stroke-width: 6px; }
+svg g.cluster.marked > :is(path, polygon) { stroke: var(--tone); stroke-width: 7px; }
+svg g.edge.marked path.hit { stroke: var(--tone); stroke-opacity: .38; stroke-width: 12px; }
+svg g.sel { filter: drop-shadow(0 0 6px var(--accent)) drop-shadow(0 0 2px var(--accent)); }
+svg g.node.sel > :is(path, polygon, ellipse):not(.hit), svg g.cluster.sel > :is(path, polygon) { stroke: var(--accent); stroke-width: 6px; }
+svg g.edge.sel path.hit { stroke: var(--accent); stroke-opacity: .45; stroke-width: 12px; }
+svg g.edge.sel > path:not(.hit) { stroke-width: 4px; }
+svg g.rel > :is(path, polygon, ellipse):not(.hit) { stroke: var(--accent); stroke-dasharray: 6 4; stroke-width: 3px; }
+svg g.edge.rel path.hit { stroke: var(--accent); stroke-opacity: .2; }
+.dim svg g.node:not(.marked):not(.sel):not(.rel), .dim svg g.edge:not(.marked):not(.sel):not(.rel) { opacity: .18; }
+.dim svg g.cluster:not(.marked):not(.sel) { opacity: .45; }
+svg .badge { cursor: pointer; }
+svg .badge circle { fill: var(--tone); stroke: #fff; stroke-width: 3px; }
+svg .badge text { fill: #fff; font: 700 17px system-ui, sans-serif; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+svg .badge.done circle { fill: var(--ok); }
+
+/* side panel */
+aside { background: var(--card); border-left: 1px solid var(--line); overflow: auto; padding: 12px 14px 40px; }
+aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+aside h2:first-child { margin-top: 0; }
+.empty { color: var(--muted); padding: 10px 0; }
+.kind { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.sel-label { font-size: 17px; font-weight: 650; margin: 2px 0 2px; word-break: break-word; }
+.sel-detail { color: var(--muted); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
+.chip { font-size: 11.5px; padding: 1px 7px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.chip.sugg { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.chip.out-done { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.chip.out-failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.chip.link { cursor: pointer; } .chip.link:hover { border-color: var(--accent); color: var(--accent); }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0 8px; }
+.seg button { padding: 5px 9px; font-size: 13px; color: var(--muted); }
+.seg button .k { font-size: 10px; opacity: .6; margin-right: 4px; }
+.seg button.sugg { box-shadow: inset 0 -2px 0 var(--warn); }
+.t-danger.on { background: var(--danger-soft) !important; color: var(--danger) !important; border-color: var(--danger) !important; font-weight: 600; }
+.t-warn.on { background: var(--warn-soft) !important; color: var(--warn) !important; border-color: var(--warn) !important; font-weight: 600; }
+.t-ok.on { background: var(--ok-soft) !important; color: var(--ok) !important; border-color: var(--ok) !important; font-weight: 600; }
+.t-info.on { background: var(--info-soft) !important; color: var(--info) !important; border-color: var(--info) !important; font-weight: 600; }
+.t-neutral.on { background: var(--neutral-soft) !important; color: var(--neutral) !important; border-color: var(--neutral) !important; font-weight: 600; }
+#note { width: 100%; min-height: 110px; resize: vertical; }
+#general { width: 100%; min-height: 70px; resize: vertical; }
+.rels { margin-top: 10px; font-size: 13px; }
+.rels .h { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
+.rel-row { padding: 3px 6px; border-radius: 5px; cursor: pointer; display: flex; gap: 6px; align-items: baseline; }
+.rel-row:hover { background: var(--accent-soft); }
+.rel-row small { color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; background: transparent; border: 1px solid var(--line); }
+.dot.danger { background: var(--danger); border-color: var(--danger); } .dot.warn { background: var(--warn); border-color: var(--warn); }
+.dot.ok { background: var(--ok); border-color: var(--ok); } .dot.info { background: var(--info); border-color: var(--info); }
+.dot.neutral { background: var(--neutral); border-color: var(--neutral); } .dot.note { background: var(--note); border-color: var(--note); }
+.clist .dname { font-weight: 600; margin: 8px 0 2px; font-size: 13px; }
+.citem { padding: 5px 6px; border-radius: 6px; cursor: pointer; border-left: 3px solid transparent; }
+.citem:hover { background: var(--accent-soft); }
+.citem.cur { background: var(--accent-soft); border-left-color: var(--accent); }
+.citem .l { display: flex; gap: 6px; align-items: baseline; }
+.citem .n { color: var(--muted); font-size: 12.5px; margin-left: 15px; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.citem .c { font-size: 11px; color: var(--muted); }
+.hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1 id="title">Diagram review</h1>
+    <div class="searchwrap"><input type="search" id="q" placeholder="Find a box or zone (press /)" autocomplete="off"><div class="results" id="results"></div></div>
+    <div class="counts" id="counts"></div>
+    <span class="spacer"></span>
+    <span class="save" id="save"></span>
+    <button class="primary" id="submit">Submit</button>
+  </div>
+  <div class="instructions" id="instructions"></div>
+  <div class="banner" id="banner"></div>
+</header>
+<div class="layout">
+  <div class="viewer" id="viewer">
+    <div class="tabs" id="tabs"></div>
+    <div class="zoom">
+      <button id="zin" title="Zoom in (+)">+</button><button id="zout" title="Zoom out (-)">−</button><button id="fit" title="Fit (f)">Fit</button>
+      <label><input type="checkbox" id="dim"> Fade unmarked</label>
+    </div>
+    <div class="legend-hint">Click a box, line or zone · drag to pan · scroll to zoom</div>
+  </div>
+  <aside>
+    <h2>Selected</h2>
+    <div id="sel"><div class="empty">Click any box, connection or zone on the diagram to comment on it.</div></div>
+    <h2 id="clist-h">Your comments</h2>
+    <div class="clist" id="clist"></div>
+    <h2>General note</h2>
+    <textarea id="general" placeholder="Anything about the whole architecture, not one element"></textarea>
+  </aside>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const TONES = ["danger", "warn", "ok", "info", "neutral"];
+const KIND = { node: "Component", edge: "Connection", zone: "Zone" };
+let F = {}, ANS = {}, OUTCOMES = {}, STATUS = "untouched", saveTimer = null;
+let IT = {}, ORDER = [], DIAG = {}, CUR = null, SEL = null;
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function st(id) { return ANS[id] || (ANS[id] = { choice: null, note: "", value: "" }); }
+function choicesOf(id) { return IT[id].g.choices || F.choices || []; }
+function toneOf(c, i) { return c.tone || TONES[i % TONES.length]; }
+function toneFor(id) {
+  const s = ANS[id]; if (!s) return null;
+  if (s.choice) { const ch = choicesOf(id); const i = ch.findIndex(c => c.id === s.choice); if (i >= 0) return toneOf(ch[i], i); }
+  return (s.note || "").trim() ? "note" : null;
+}
+function hasAny(id) { const s = ANS[id]; return !!(s && (s.choice || (s.note || "").trim())); }
+function el(id) { const it = IT[id]; return it && DIAG[it.it.diagram] && DIAG[it.it.diagram].els[id]; }
+function choiceLabel(id) { const s = ANS[id]; if (!s || !s.choice) return ""; const c = choicesOf(id).find(c => c.id === s.choice); return c ? c.label : s.choice; }
+
+async function load() {
+  const d = await (await fetch("/api/session")).json();
+  F = d.items; OUTCOMES = d.outcomes || {};
+  if (!F.input || F.input === "check") { F.input = "choice"; F.choices = F.choices || [{ id: "marked", label: F.mark_label || "Flag", tone: "danger" }]; }
+  const resp = d.response || {};
+  for (const [k, v] of Object.entries(resp.items || {})) ANS[k] = { choice: v.choice ?? null, note: v.note || "", value: v.value || "" };
+  STATUS = resp.status || "untouched";
+  for (const g of F.groups) for (const it of g.items) { IT[it.id] = { it, g }; ORDER.push(it.id); }
+  document.title = F.title || "Diagram review";
+  $("#title").textContent = F.title || "Diagram review";
+  $("#instructions").innerHTML = esc(F.instructions || "Click an element, pick an answer and/or write a note.") +
+    " Keys: " + (F.choices || []).map((c, i) => `<kbd>${i + 1}</kbd> ${esc(c.label)}`).join(" ") +
+    " <kbd>0</kbd> clear <kbd>n</kbd> note <kbd>Esc</kbd> deselect. " + esc(F.submit_hint || "Everything autosaves; press Submit when you're done.");
+  $("#general").value = resp.general_note || "";
+  const viewer = $("#viewer");
+  for (const dg of F.diagrams || []) {
+    const stage = document.createElement("div"); stage.className = "stage"; stage.innerHTML = dg.svg;
+    viewer.appendChild(stage);
+    const svg = stage.querySelector("svg");
+    const vb = (svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
+    const w = vb[2] || svg.width.baseVal.value, h = vb[3] || svg.height.baseVal.value;
+    svg.setAttribute("width", w); svg.setAttribute("height", h);
+    svg.querySelectorAll("title").forEach(t => t.remove());  // no native tooltips over our own
+    const els = {};
+    svg.querySelectorAll("[data-fp]").forEach(g => {
+      els[g.dataset.fp] = g;
+      if (g.classList.contains("edge")) {
+        const p = g.querySelector("path"); if (p) { const hit = p.cloneNode(); hit.setAttribute("class", "hit"); hit.removeAttribute("stroke-dasharray"); g.insertBefore(hit, g.firstChild); }
+      }
+    });
+    const graph = svg.querySelector("g.graph") || svg;
+    const badges = document.createElementNS("http://www.w3.org/2000/svg", "g"); badges.setAttribute("class", "badges"); graph.appendChild(badges);
+    DIAG[dg.id] = { dg, stage, svg, w, h, els, badges, view: null };
+    const b = document.createElement("button"); b.dataset.d = dg.id; b.innerHTML = esc(dg.name) + '<span class="n"></span>';
+    b.onclick = () => showDiagram(dg.id); $("#tabs").appendChild(b);
+  }
+  if (!F.diagrams || !F.diagrams.length) $("#sel").innerHTML = '<div class="empty">This session has no diagrams; build it with <code>feedback-panel diagram</code>.</div>';
+  else showDiagram(F.diagrams[0].id);
+  paintAll(); renderList(); banner();
+}
+
+// ---------------------------------------------------------------- view: pan and zoom
+function apply(D) { D.stage.style.transform = `translate(${D.view.x}px, ${D.view.y}px) scale(${D.view.k})`; }
+function fit(D) {
+  const r = $("#viewer").getBoundingClientRect();
+  const k = Math.min((r.width - 20) / D.w, (r.height - 70) / D.h);
+  D.view = { k, x: (r.width - D.w * k) / 2, y: 50 + (r.height - 60 - D.h * k) / 2 }; apply(D);
+}
+function zoomAt(D, factor, mx, my) {
+  const v = D.view, k2 = Math.max(0.05, Math.min(6, v.k * factor));
+  v.x = mx - (mx - v.x) * (k2 / v.k); v.y = my - (my - v.y) * (k2 / v.k); v.k = k2; apply(D);
+}
+function showDiagram(id) {
+  CUR = id;
+  for (const [k, D] of Object.entries(DIAG)) D.stage.classList.toggle("on", k === id);
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.d === id));
+  const D = DIAG[id]; if (!D.view) fit(D);
+  requestAnimationFrame(() => placeBadges(id));
+}
+function focusEl(id, zoom) {
+  const it = IT[id].it; if (it.diagram !== CUR) showDiagram(it.diagram);
+  const D = DIAG[CUR], g = el(id); if (!g) return;
+  const vr = $("#viewer").getBoundingClientRect(), r = g.getBoundingClientRect();
+  if (zoom) {
+    const want = Math.min(1.4, Math.max(D.view.k, Math.min((vr.width * 0.4) / (r.width / D.view.k), (vr.height * 0.4) / (r.height / D.view.k))));
+    zoomAt(D, want / D.view.k, r.left + r.width / 2 - vr.left, r.top + r.height / 2 - vr.top);
+  }
+  const r2 = g.getBoundingClientRect();
+  D.view.x += vr.left + vr.width / 2 - (r2.left + r2.width / 2);
+  D.view.y += vr.top + vr.height / 2 - (r2.top + r2.height / 2); apply(D);
+}
+
+const viewer = $("#viewer");
+let drag = null;
+viewer.addEventListener("wheel", e => {
+  if (!CUR) return; e.preventDefault();
+  const r = viewer.getBoundingClientRect();
+  zoomAt(DIAG[CUR], Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+viewer.addEventListener("pointerdown", e => {
+  if (!CUR || e.button !== 0 || e.target.closest(".tabs, .zoom")) return;
+  drag = { x: e.clientX, y: e.clientY, vx: DIAG[CUR].view.x, vy: DIAG[CUR].view.y, moved: false };
+});
+window.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+  drag.moved = true; viewer.classList.add("panning");
+  const D = DIAG[CUR]; D.view.x = drag.vx + dx; D.view.y = drag.vy + dy; apply(D);
+});
+window.addEventListener("pointerup", e => {
+  if (!drag) return;
+  const moved = drag.moved; drag = null; viewer.classList.remove("panning");
+  if (moved || e.target.closest(".tabs, .zoom")) return;
+  const b = e.target.closest("[data-for]"), g = e.target.closest("[data-fp]");
+  const id = b ? b.dataset.for : g ? g.dataset.fp : null;
+  if (id) select(id); else if (e.target.closest(".viewer")) select(null);
+});
+$("#zin").onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(DIAG[CUR], 1.3, r.width / 2, r.height / 2); };
+$("#zout").onclick = () => { const r = viewer.getBoundingClientRect(); zoomAt(DIAG[CUR], 1 / 1.3, r.width / 2, r.height / 2); };
+$("#fit").onclick = () => fit(DIAG[CUR]);
+$("#dim").onchange = e => viewer.classList.toggle("dim", e.target.checked);
+window.addEventListener("resize", () => CUR && fit(DIAG[CUR]));
+
+// ---------------------------------------------------------------- marks on the diagram
+function paint(id) {
+  const g = el(id); if (!g) return;
+  g.classList.remove("marked", ...TONES.map(t => "m-" + t), "m-note");
+  const t = toneFor(id);
+  if (t) g.classList.add("marked", "m-" + t);
+}
+function paintAll() { for (const id of ORDER) paint(id); for (const id of Object.keys(DIAG)) placeBadges(id); updateCounts(); }
+function anchor(g) {
+  const bb = g.getBBox();
+  if (g.classList.contains("edge")) {
+    const t = g.querySelector("text");
+    if (t) { const tb = t.getBBox(); return [tb.x + tb.width + 10, tb.y + 4]; }
+    const p = g.querySelector("path:not(.hit)");
+    if (p) { const pt = p.getPointAtLength(p.getTotalLength() / 2); return [pt.x, pt.y - 14]; }
+  }
+  if (g.classList.contains("cluster")) {
+    const t = g.querySelector("text"); if (t) { const tb = t.getBBox(); return [tb.x + tb.width + 18, tb.y + tb.height / 2]; }
+  }
+  return [bb.x + bb.width - 4, bb.y + 4];
+}
+function placeBadges(did) {
+  const D = DIAG[did]; if (!D || !D.stage.classList.contains("on")) return;
+  D.badges.innerHTML = "";
+  for (const [id, g] of Object.entries(D.els)) {
+    const t = toneFor(id), done = (OUTCOMES[id] || {}).state === "done";
+    if (!t && !done) continue;
+    const [x, y] = anchor(g), s = ANS[id] || {};
+    const b = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    b.setAttribute("class", "badge m-" + (t || "ok") + (done ? " done" : "")); b.dataset.for = id;
+    b.setAttribute("transform", `translate(${x},${y})`);
+    const label = done ? "✓" : (s.note || "").trim() ? "✎" : (choiceLabel(id)[0] || "•");
+    b.innerHTML = `<circle r="15"></circle><text>${esc(label)}</text>`;
+    D.badges.appendChild(b);
+  }
+}
+function updateCounts() {
+  const per = {}; let notes = 0, n = 0;
+  for (const id of ORDER) { if (!hasAny(id)) continue; n++; const s = ANS[id]; if (s.choice) per[s.choice] = (per[s.choice] || 0) + 1; if ((s.note || "").trim()) notes++; }
+  $("#counts").innerHTML = (F.choices || []).map((c, i) => per[c.id] ? `<span class="cnt t-${toneOf(c, i)} on">${esc(c.label)} ${per[c.id]}</span>` : "").join("") +
+    (notes ? `<span class="cnt">✎ ${notes} note${notes > 1 ? "s" : ""}</span>` : "");
+  document.querySelectorAll("#tabs button").forEach(b => {
+    const k = ORDER.filter(id => IT[id].it.diagram === b.dataset.d && hasAny(id)).length;
+    b.querySelector(".n").textContent = k ? `(${k})` : "";
+  });
+  $("#clist-h").textContent = `Your comments (${n})`;
+}
+
+// ---------------------------------------------------------------- selection panel
+function related(id) {
+  const it = IT[id].it, out = { from: [], to: [], members: [], zones: [] };
+  for (const oid of ORDER) {
+    const o = IT[oid].it; if (o.diagram !== it.diagram) continue;
+    if (it.kind === "node" && o.kind === "edge") { if (o.from === id) out.from.push(oid); if (o.to === id) out.to.push(oid); }
+    if (it.kind === "zone" && o.zone === id) (o.kind === "zone" ? out.zones : out.members).push(oid);
+  }
+  return out;
+}
+function relRow(oid, text, sub) {
+  const t = toneFor(oid);
+  return `<div class="rel-row" data-go="${esc(oid)}"><span class="dot ${t || ""}"></span><span>${esc(text)}${sub ? ` <small>${esc(sub)}</small>` : ""}</span></div>`;
+}
+function select(id) {
+  document.querySelectorAll("svg .sel, svg .rel").forEach(g => g.classList.remove("sel", "rel"));
+  SEL = id;
+  if (!id) { $("#sel").innerHTML = '<div class="empty">Click any box, connection or zone on the diagram to comment on it.</div>'; renderList(); return; }
+  const { it } = IT[id], s = st(id), ch = choicesOf(id), g = el(id);
+  if (it.diagram !== CUR) showDiagram(it.diagram);
+  if (g) g.classList.add("sel");
+  const rel = related(id);
+  const mark = x => { const e = el(x); if (e) e.classList.add("rel"); };
+  if (it.kind === "edge") { mark(it.from); mark(it.to); }
+  rel.from.concat(rel.to).forEach(mark);
+  const meta = Object.entries(it.meta || {}).filter(([k]) => !k.startsWith("_") && k !== "diagram" && k !== "zone" && k !== "inside");
+  const oc = OUTCOMES[id], sc = it.suggested_choice || F.suggest_choice;
+  let h = `<div class="kind">${KIND[it.kind] || it.kind} · ${esc(DIAG[it.diagram].dg.name)}</div>
+    <div class="sel-label">${esc(it.label)}</div>
+    ${it.detail ? `<div class="sel-detail">${esc(it.detail)}</div>` : ""}
+    <div class="chips">
+      ${it.zone && IT[it.zone] ? `<span class="chip link" data-go="${esc(it.zone)}">in ${esc(IT[it.zone].it.label)}</span>` : ""}
+      ${meta.map(([k, v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join("")}
+      ${it.suggested ? `<span class="chip sugg">Claude: ${esc(it.suggested === true ? "suggested" : it.suggested)}</span>` : ""}
+      ${oc ? `<span class="chip out-${esc(oc.state)}">${esc(oc.state)}${oc.text ? ": " + esc(oc.text) : ""}</span>` : ""}
+    </div>
+    <div class="seg">${ch.map((c, i) => `<button data-c="${esc(c.id)}" class="t-${toneOf(c, i)}${s.choice === c.id ? " on" : ""}${it.suggested && sc === c.id ? " sugg" : ""}" title="${esc(c.hint || c.label)}"><span class="k">${i + 1}</span>${esc(c.label)}</button>`).join("")}</div>
+    <textarea id="note" placeholder="${esc(F.note_placeholder || "What's wrong here? Where should it go instead? What should it connect to?")}">${esc(s.note)}</textarea>`;
+  h += `<div class="rels">`;
+  if (it.kind === "edge") {
+    h += `<div class="h">Ends</div>` + relRow(it.from, "from " + (IT[it.from] ? IT[it.from].it.label : it.from)) + relRow(it.to, "to " + (IT[it.to] ? IT[it.to].it.label : it.to));
+  }
+  if (rel.from.length) h += `<div class="h">Connects to (${rel.from.length})</div>` + rel.from.map(e => relRow(e, "→ " + IT[IT[e].it.to].it.label, IT[e].it.detail)).join("");
+  if (rel.to.length) h += `<div class="h">Connected from (${rel.to.length})</div>` + rel.to.map(e => relRow(e, "← " + IT[IT[e].it.from].it.label, IT[e].it.detail)).join("");
+  if (rel.zones.length) h += `<div class="h">Zones inside (${rel.zones.length})</div>` + rel.zones.map(z => relRow(z, IT[z].it.label)).join("");
+  if (rel.members.length) h += `<div class="h">Components (${rel.members.length})</div>` + rel.members.map(m => relRow(m, IT[m].it.label)).join("");
+  h += `</div>`;
+  $("#sel").innerHTML = h;
+  $("#sel").querySelectorAll(".seg button").forEach(b => b.onclick = () => setChoice(id, s.choice === b.dataset.c ? null : b.dataset.c));
+  $("#note").addEventListener("input", e => { s.note = e.target.value; paint(id); placeBadges(CUR); changed(); });
+  renderList();
+}
+$("#sel").addEventListener("click", e => { const r = e.target.closest("[data-go]"); if (r) { select(r.dataset.go); focusEl(r.dataset.go, false); } });
+function setChoice(id, cid) {
+  st(id).choice = cid; paint(id); placeBadges(CUR);
+  $("#sel").querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.c === cid));
+  changed();
+}
+
+// ---------------------------------------------------------------- comment list
+function renderList() {
+  const by = {};
+  for (const id of ORDER) if (hasAny(id) || OUTCOMES[id]) (by[IT[id].it.diagram] = by[IT[id].it.diagram] || []).push(id);
+  if (!Object.keys(by).length) { $("#clist").innerHTML = '<div class="empty">Nothing yet.</div>'; updateCounts(); return; }
+  $("#clist").innerHTML = Object.entries(by).map(([d, ids]) => `<div class="dname">${esc(DIAG[d] ? DIAG[d].dg.name : d)}</div>` + ids.map(id => {
+    const it = IT[id].it, s = ANS[id] || {}, oc = OUTCOMES[id];
+    return `<div class="citem${id === SEL ? " cur" : ""}" data-go="${esc(id)}"><div class="l"><span class="dot ${toneFor(id) || ""}"></span>
+      <span>${esc(it.label)}</span> <span class="c">${KIND[it.kind] || ""}${s.choice ? " · " + esc(choiceLabel(id)) : ""}${oc ? " · " + esc(oc.state) : ""}</span></div>
+      ${(s.note || "").trim() ? `<div class="n">${esc(s.note)}</div>` : ""}</div>`;
+  }).join("")).join("");
+  updateCounts();
+}
+$("#clist").addEventListener("click", e => { const r = e.target.closest("[data-go]"); if (r) { select(r.dataset.go); focusEl(r.dataset.go, true); } });
+
+// ---------------------------------------------------------------- search
+let hits = [], hi = 0;
+function search() {
+  const q = $("#q").value.trim().toLowerCase(), box = $("#results");
+  if (!q) { box.classList.remove("show"); return; }
+  const score = id => { const it = IT[id].it, l = it.label.toLowerCase(); return l.startsWith(q) ? 0 : l.includes(q) ? 1 : (it.detail || "").toLowerCase().includes(q) || it.id.toLowerCase().includes(q) ? 2 : 9; };
+  hits = ORDER.filter(id => score(id) < 9).sort((a, b) => score(a) - score(b) || (IT[a].it.diagram === CUR ? -1 : 1) - (IT[b].it.diagram === CUR ? -1 : 1)).slice(0, 15);
+  hi = 0;
+  box.innerHTML = hits.length ? hits.map((id, i) => `<div data-go="${esc(id)}" class="${i === 0 ? "hi" : ""}">${esc(IT[id].it.label)} <small>${KIND[IT[id].it.kind]} · ${esc(DIAG[IT[id].it.diagram].dg.name)}</small></div>`).join("") : '<div><small>No match</small></div>';
+  box.classList.add("show");
+}
+function pick(id) { $("#results").classList.remove("show"); $("#q").blur(); select(id); focusEl(id, true); }
+$("#q").addEventListener("input", search);
+$("#q").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); hi = (hi + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length; document.querySelectorAll("#results div").forEach((d, i) => d.classList.toggle("hi", i === hi)); }
+  if (e.key === "Enter" && hits[hi]) pick(hits[hi]);
+  if (e.key === "Escape") { $("#q").value = ""; search(); $("#q").blur(); }
+});
+$("#results").addEventListener("mousedown", e => { const r = e.target.closest("[data-go]"); if (r) { e.preventDefault(); pick(r.dataset.go); } });
+$("#q").addEventListener("blur", () => setTimeout(() => $("#results").classList.remove("show"), 150));
+
+// ---------------------------------------------------------------- saving
+function changed() {
+  renderList();
+  if (STATUS === "submitted") { STATUS = "draft"; banner(); }
+  $("#save").textContent = "unsaved…"; $("#save").classList.remove("err");
+  clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false), 600);
+}
+async function save(submit) {
+  clearTimeout(saveTimer); saveTimer = null;
+  const items = {};
+  for (const [k, v] of Object.entries(ANS)) if (v.choice || (v.note || "").trim()) items[k] = v;
+  try {
+    const r = await fetch("/api/response", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, general_note: $("#general").value, submit }) });
+    const d = await r.json(); if (!d.ok) throw new Error(d.error);
+    STATUS = d.status; $("#save").textContent = "saved " + new Date().toLocaleTimeString(); banner();
+  } catch (e) { $("#save").textContent = "save failed — is the server running?"; $("#save").classList.add("err"); }
+}
+function banner() {
+  const b = $("#banner");
+  if (STATUS === "submitted") { b.className = "banner show ok"; b.textContent = "Submitted. Claude picks it up from here. You can keep editing; that reopens it until you Submit again."; }
+  else if (STATUS === "draft" && Object.keys(OUTCOMES).length) { b.className = "banner show warn"; b.textContent = "Claude has recorded outcomes on some elements (green ✓ badges). Changes since then need another Submit."; }
+  else b.className = "banner";
+}
+async function pollOutcomes() {
+  try {
+    const oc = await (await fetch("/api/outcomes")).json();
+    if (JSON.stringify(oc) !== JSON.stringify(OUTCOMES)) { OUTCOMES = oc; placeBadges(CUR); renderList(); if (SEL) select(SEL); banner(); }
+  } catch (e) {}
+}
+$("#general").addEventListener("input", changed);
+$("#submit").addEventListener("click", () => save(true));
+document.addEventListener("keydown", e => {
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+  if (e.key === "Escape") { if (typing) document.activeElement.blur(); else select(null); return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); return; }
+  if (e.key === "f") { fit(DIAG[CUR]); return; }
+  if (e.key === "+" || e.key === "=") { $("#zin").click(); return; }
+  if (e.key === "-") { $("#zout").click(); return; }
+  if (!SEL) return;
+  if (e.key === "n" || e.key === "Enter") { e.preventDefault(); $("#note").focus(); return; }
+  const n = parseInt(e.key, 10), ch = choicesOf(SEL);
+  if (Number.isNaN(n)) return;
+  if (n === 0) setChoice(SEL, null); else if (ch[n - 1]) setChoice(SEL, st(SEL).choice === ch[n - 1].id ? null : ch[n - 1].id);
+});
+window.addEventListener("beforeunload", () => { if (saveTimer) save(false); });
+load(); setInterval(pollOutcomes, 5000);
+</script>
+</body>
+</html>
