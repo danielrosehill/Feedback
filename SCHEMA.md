@@ -33,6 +33,8 @@ A form is answer options plus items. Answer options normally come from a templat
           "id": "flatpak:system:org.gimp.GIMP",        // required, unique; what Claude acts on
           "label": "GIMP",                             // required
           "detail": "org.gimp.GIMP",                   // optional second line (clamped to 2 lines)
+          "image": "https://.../thumb.jpg",            // optional thumbnail left of the label (88px, hover enlarges)
+          "link": "https://...",                       // optional: the label opens this in a new tab
           "size_bytes": 269000000,                     // optional; enables size sort
           "meta": { "version": "3.0.4", "_remove": "flatpak uninstall ..." },  // chips; _keys hidden
           "tags": ["duplicate"],
