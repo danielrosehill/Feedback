@@ -61,7 +61,8 @@ PANEL_HTML = ROOT / "panel" / "index.html"
 DIAGRAM_HTML = ROOT / "panel" / "diagram.html"
 HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
 TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
-FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "suggest_choice", "submit_hint")
+FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "mark_tone", "suggest_choice", "submit_hint",
+             "note_open", "note_placeholder")
 LOCK = threading.Lock()
 
 
@@ -128,7 +129,8 @@ def normalize(items):
     if items.get("input") not in ("choice", "check", "text"):
         items["input"] = "choice" if items.get("choices") else "check"
     if items["input"] == "check":
-        items["choices"] = [{"id": "marked", "label": items.get("mark_label") or "Ticked", "tone": "danger"}]
+        items["choices"] = [{"id": "marked", "label": items.get("mark_label") or "Ticked",
+                             "tone": items.get("mark_tone") or "danger"}]
     if items["input"] == "choice" and not items.get("choices"):
         die("input 'choice' needs a 'choices' list")
     for c in items.get("choices", []):
@@ -199,7 +201,7 @@ def apply_template(items, tdir):
             continue
         # The template decides how the form answers; wording in the items file only wins
         # for title/instructions/submit_hint.
-        if k in ("title", "instructions", "submit_hint") and k in items:
+        if k in ("title", "instructions", "submit_hint", "note_placeholder") and k in items:
             continue
         items[k] = fill(form[k], ctx)
     if form.get("input") in ("choice", "text"):

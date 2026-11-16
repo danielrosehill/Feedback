@@ -16,6 +16,10 @@ A form is answer options plus items. Answer options normally come from a templat
     { "id": "ask",    "label": "Ask me", "tone": "warn" }
   ],                                                   // tones: danger warn ok info neutral; order = number keys 1..n
   "mark_label": "Remove",                              // input=check: what a tick means
+  "mark_tone": "ok",                                   // input=check: tick colour (default danger)
+  "note_open": "when-chosen",                          // per-item note: omit = behind a ✎ button; "always" = always
+                                                       // shown, big; "when-chosen" = big box opens once answered/ticked
+  "note_placeholder": "Why I like it",                 // hint in the note box (items file wins over the template)
   "suggest_choice": "remove",                          // what a bare suggestion recommends (default: first choice)
 
   "groups": [

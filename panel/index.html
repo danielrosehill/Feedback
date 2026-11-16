@@ -77,6 +77,7 @@ section.collapsed .gbody, section.collapsed .gdesc { display: none; }
 .note, .answer { grid-column: 1 / -1; width: 100%; display: none; resize: vertical; }
 .row.check .note { grid-column: 2 / -1; }
 .row.noteopen .note, .answer { display: block; }
+.note.big { min-height: 4.5em; font-size: 15px; }
 .answer { min-height: 54px; }
 .general { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .general textarea { width: 100%; min-height: 70px; resize: vertical; }
@@ -222,19 +223,21 @@ function rowEl(it, g) {
     control = `<span class="seg">${ch.map((c, i) => `<button data-c="${esc(c.id)}" class="t-${toneOf(c, i)}${s.choice === c.id ? " on" : ""}${sc === c.id ? " sugg" : ""}" title="${esc(c.hint || c.label)}">${esc(c.label)}</button>`).join("")}</span>`;
   }
   const noteBtn = F.input === "text" ? "" : `<button class="notebtn ${s.note ? "has" : ""}" title="Add a note">✎ note</button>`;
-  row.innerHTML = (F.input === "check" ? `<input type="checkbox" ${s.choice ? "checked" : ""} aria-label="${esc(it.label)}">` : "") + info +
+  const noteCls = "note" + (F.note_open ? " big" : ""), notePh = esc(F.note_placeholder || "Note for Claude about this item");
+  row.innerHTML = (F.input === "check" ? `<input type="checkbox" ${s.choice ? "checked" : ""} aria-label="${esc(it.label)}" style="accent-color: var(--${toneOf(ch[0], 0)})">` : "") + info +
     `<div class="right"><span class="size">${fmtSize(it.size_bytes)}</span>${control}${noteBtn}</div>` +
     (F.input === "text" ? `<textarea class="answer" placeholder="${esc(it.placeholder || "Your answer")}">${esc(s.value)}</textarea>`
-                        : `<textarea class="note" rows="1" placeholder="Note for Claude about this item">${esc(s.note)}</textarea>`);
+                        : `<textarea class="${noteCls}" rows="${F.note_open ? 3 : 1}" placeholder="${notePh}">${esc(s.note)}</textarea>`);
   paint(row, ch);
   if (F.input === "check") {
     const cb = row.querySelector("input[type=checkbox]");
-    cb.addEventListener("change", () => { s.choice = cb.checked ? ch[0].id : null; paint(row, ch); changed(); });
+    cb.addEventListener("change", () => { s.choice = cb.checked ? ch[0].id : null; paint(row, ch); changed();
+      if (cb.checked && F.note_open === "when-chosen") row.querySelector(".note").focus(); });
     row.querySelector(".label").addEventListener("click", () => cb.click());
   }
   row.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setChoice(row, ch, s.choice === b.dataset.c ? null : b.dataset.c)));
   const nb = row.querySelector(".notebtn"), note = row.querySelector(".note"), ans = row.querySelector(".answer");
-  if (s.note) row.classList.add("noteopen");
+  if (s.note || F.note_open === "always") row.classList.add("noteopen");
   if (nb) nb.addEventListener("click", () => { row.classList.toggle("noteopen"); if (row.classList.contains("noteopen")) note.focus(); });
   if (note) note.addEventListener("input", () => { s.note = note.value; nb.classList.toggle("has", !!s.note); changed(); });
   if (ans) ans.addEventListener("input", () => { s.value = ans.value; changed(); });
@@ -247,6 +250,7 @@ function rowEl(it, g) {
 function paint(row, ch) {
   const s = st(row.dataset.id);
   row.className = row.className.replace(/\br-\w+/g, "").trim();
+  if (F.note_open === "when-chosen") row.classList.toggle("noteopen", !!(s.choice || (s.note || "").trim()));
   const i = ch.findIndex(c => c.id === s.choice);
   if (i >= 0) row.classList.add("r-" + toneOf(ch[i], i));
   row.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.c === s.choice));
