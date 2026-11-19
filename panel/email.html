@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email feedback</title>
+<link rel="stylesheet" href="/static/review-common.css">
+<style>
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; padding:10px 18px 0; }
+  .tab { border:1px solid var(--rule); background:#fff; border-radius:8px 8px 0 0; padding:6px 12px; cursor:pointer; font-size:14px; }
+  .tab.on { border-color:var(--accent); box-shadow:inset 0 -3px 0 var(--accent); }
+  .tab .v { font-size:11px; color:var(--muted); display:block; }
+  .mail { background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.12); max-width:860px; margin:0 auto; border-radius:8px; overflow:hidden; }
+  .f { display:grid; grid-template-columns: 110px minmax(0,1fr) auto; gap:10px; align-items:start; padding:10px 16px; border-bottom:1px solid var(--rule); }
+  .f .lab { color:var(--muted); font-size:13px; padding-top:3px; }
+  .f .val { min-width:0; overflow-wrap:anywhere; }
+  .f.subject .val { font-weight:600; font-size:17px; }
+  .f .ans { display:flex; gap:4px; }
+  .f .ans button.fine.on { background:#1b6e3a; color:#fff; border-color:#1b6e3a; }
+  .f .ans button.chg.on { background:var(--pin); color:#fff; border-color:var(--pin); }
+  .f.body { grid-template-columns: 110px minmax(0,1fr) auto; }
+  .bodyv { font-size:15px; line-height:1.6; }
+  .bodyv.plain { white-space:pre-wrap; }
+  .alts { display:flex; flex-direction:column; gap:6px; }
+  .alt { border:1px solid var(--rule); border-radius:8px; padding:6px 10px; cursor:pointer; font-weight:600; }
+  .alt.on { border-color:#1b6e3a; background:#eef7f0; }
+  .alt .pick { font-size:11px; color:var(--muted); font-weight:400; margin-inline-start:8px; }
+  .att { display:flex; gap:8px; align-items:center; font-size:14px; }
+  .att a { color:var(--accent); }
+  .addr { display:inline-block; background:#f1f2f5; border-radius:12px; padding:0 8px; margin:0 4px 4px 0; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Email feedback</h1>
+  <button id="wholebtn">🎙 Whole email</button>
+  <span class="spacer"></span>
+  <span id="status">loading…</span>
+  <button class="primary" id="submit">Submit round</button>
+</header>
+<div id="hint"></div>
+<div id="micerr"></div>
+<div class="tabs" id="tabs"></div>
+<main>
+  <div><div class="mail" id="mail"></div></div>
+  <aside>
+    <div class="round">
+      <label id="vlabel">Verdict on this draft</label>
+      <div class="chips" id="verdicts"></div>
+      <label>Overall note (optional)</label>
+      <textarea id="gnote" dir="auto" placeholder="Anything about the whole round"></textarea>
+    </div>
+    <div id="list"></div>
+  </aside>
+</main>
+<div class="selpop" id="selpop"><button class="small" id="selrec">🎙 Comment on selection</button></div>
+<script src="/static/review-common.js"></script>
+<script>
+const $ = s => document.querySelector(s), esc = FB.esc;
+let cur = 0, verdicts = {}, picked = {}, gnote = "", pending = null;
+const FIELD_LABEL = { from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", attachments: "Attachments", body: "Body" };
+const FIELD_CAT = { from: "Recipients", to: "Recipients", cc: "Recipients", bcc: "Recipients", subject: "Subject", attachments: "Attachments", body: "Wording" };
+const catFor = f => (FB.items.categories || []).includes(FIELD_CAT[f]) ? FIELD_CAT[f] : null;
+const size = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+
+FB.describe = c => {
+  if (c.scope === "email") return { where: "Whole email", doc: true };
+  const w = FIELD_LABEL[c.field] + (c.scope === "span" ? " · selection" : "") + (c.intent === "Fine" ? " · ✓ Fine" : "");
+  return { where: w, quote: c.quote };
+};
+FB.extra = () => ({ verdicts, picked_subject: picked, general_note: gnote });
+
+function fieldState(f) {
+  const cs = FB.comments.filter(c => c.draft === cur && c.field === f);
+  if (cs.some(c => c.intent === "Change" || c.scope === "span" || (c.note || "").trim() || c.audio)) return "Change";
+  return cs.some(c => c.intent === "Fine") ? "Fine" : null;
+}
+async function toggleFine(f) {
+  const ex = FB.comments.find(c => c.draft === cur && c.field === f && c.scope === "field" && c.intent === "Fine");
+  if (ex) return FB.remove(ex.id);
+  await FB.addComment({ scope: "field", draft: cur, field: f, intent: "Fine", category: catFor(f) }, false);
+}
+const change = f => FB.addComment({ scope: "field", draft: cur, field: f, intent: "Change", category: catFor(f) });
+
+FB.render = function () {
+  const it = FB.items, d = it.drafts[cur];
+  $("#tabs").innerHTML = it.drafts.length > 1 ? it.drafts.map(x => `<span class="tab${x.i === cur ? " on" : ""}" data-t="${x.i}">${esc(x.label)}<span class="v">${esc(verdicts[x.i] || "no verdict yet")}</span></span>`).join("") : "";
+  $("#tabs").querySelectorAll("[data-t]").forEach(t => t.onclick = () => { cur = +t.dataset.t; FB.render(); });
+  const ans = f => { const s = fieldState(f); return `<div class="ans"><button class="small fine${s === "Fine" ? " on" : ""}" data-fine="${f}">✓ Fine</button><button class="small chg${s === "Change" ? " on" : ""}" data-chg="${f}">✎ Change</button></div>`; };
+  const addrs = a => a.map(x => `<span class="addr" dir="ltr">${esc(x)}</span>`).join("");
+  let h = "";
+  if (d.from) h += `<div class="f"><span class="lab">From</span><div class="val">${addrs([d.from])}</div>${ans("from")}</div>`;
+  h += `<div class="f"><span class="lab">To</span><div class="val">${addrs(d.to) || "<em>none</em>"}</div>${ans("to")}</div>`;
+  if (d.cc.length) h += `<div class="f"><span class="lab">Cc</span><div class="val">${addrs(d.cc)}</div>${ans("cc")}</div>`;
+  if (d.bcc.length) h += `<div class="f"><span class="lab">Bcc</span><div class="val">${addrs(d.bcc)}</div>${ans("bcc")}</div>`;
+  if (d.subjects.length > 1) {
+    h += `<div class="f subject"><span class="lab">Subject<br><small>pick one</small></span><div class="val alts">${d.subjects.map((s, i) =>
+      `<div class="alt${picked[cur] === i ? " on" : ""}" dir="${d.dir}" data-alt="${i}"><span data-sel="subject" data-alt-text="${i}">${esc(s)}</span><span class="pick">${picked[cur] === i ? "✓ picked" : "click to pick"}</span></div>`).join("")}</div>${ans("subject")}</div>`;
+  } else h += `<div class="f subject"><span class="lab">Subject</span><div class="val" dir="${d.dir}" data-sel="subject">${esc(d.subjects[0])}</div>${ans("subject")}</div>`;
+  if (d.attachments.length) h += `<div class="f"><span class="lab">Attachments</span><div class="val">${d.attachments.map((a, i) =>
+    `<div class="att">📎 <a href="/files/${cur}/${i}" target="_blank" rel="noopener">${esc(a.name)}</a> <span class="dur">${size(a.size)}</span></div>`).join("")}</div>${ans("attachments")}</div>`;
+  h += `<div class="f body"><span class="lab">Body</span><div class="val bodyv${d.body_html ? "" : " plain"}" dir="${d.dir}" lang="${esc(d.lang)}" data-sel="body">${d.body_html || esc(d.body_text)}</div>${ans("body")}</div>`;
+  $("#mail").innerHTML = h;
+  $("#mail").querySelectorAll("[data-fine]").forEach(b => b.onclick = () => toggleFine(b.dataset.fine));
+  $("#mail").querySelectorAll("[data-chg]").forEach(b => b.onclick = () => change(b.dataset.chg));
+  $("#mail").querySelectorAll("[data-alt]").forEach(el => el.onclick = () => { if (!window.getSelection().isCollapsed) return; const i = +el.dataset.alt; picked[cur] = picked[cur] === i ? undefined : i; if (picked[cur] === undefined) delete picked[cur]; FB.render(); FB.save(); });
+  $("#vlabel").textContent = it.drafts.length > 1 ? `Verdict on draft ${cur + 1} (${d.label})` : "Verdict on this draft";
+  FB.verdictChips($("#verdicts"), verdicts[cur] || null, v => { if (v) verdicts[cur] = v; else delete verdicts[cur]; FB.render(); FB.save(); });
+  const list = FB.comments.filter(c => c.draft === cur && !(c.scope === "field" && c.intent === "Fine" && !(c.note || "").trim() && !c.audio));
+  const order = ["email", "from", "to", "cc", "bcc", "subject", "attachments", "body"];
+  list.sort((a, b) => order.indexOf(a.field || "email") - order.indexOf(b.field || "email") || (a.start || 0) - (b.start || 0));
+  const L = $("#list"); L.innerHTML = "";
+  if (!list.length) L.innerHTML = '<div class="empty">No comments on this draft yet. ✓ Fine or ✎ Change on each part, select words in the subject or body to comment on them, or “Whole email”.</div>';
+  list.forEach((c, i) => L.appendChild(FB.card(c, i + 1)));
+};
+
+document.addEventListener("mouseup", ev => {
+  if (ev.target.closest("#selpop")) return;
+  setTimeout(() => {
+    const s = window.getSelection(), pop = $("#selpop");
+    if (!s.rangeCount || s.isCollapsed) { pop.style.display = "none"; pending = null; return; }
+    const r = s.getRangeAt(0), a = r.startContainer.nodeType === 3 ? r.startContainer.parentElement : r.startContainer;
+    const host = a.closest && a.closest("[data-sel]");
+    if (!host || !host.contains(r.endContainer)) { pop.style.display = "none"; return; }
+    const pre = document.createRange(); pre.selectNodeContents(host); pre.setEnd(r.startContainer, r.startOffset);
+    const full = host.textContent, start = pre.toString().length, quote = r.toString(), end = start + quote.length;
+    if (!quote.trim()) { pop.style.display = "none"; return; }
+    pending = { field: host.dataset.sel, start, end, quote: quote.trim(), prefix: full.slice(Math.max(0, start - 40), start), suffix: full.slice(end, end + 40) };
+    const rc = r.getBoundingClientRect();
+    pop.style.left = (rc.left + window.scrollX) + "px"; pop.style.top = (rc.bottom + window.scrollY + 6) + "px"; pop.style.display = "block";
+  }, 0);
+});
+$("#selrec").onclick = () => {
+  if (!pending) return; const p = pending; pending = null; $("#selpop").style.display = "none"; window.getSelection().removeAllRanges();
+  FB.addComment(Object.assign({ scope: "span", draft: cur, category: catFor(p.field) }, p));
+};
+$("#wholebtn").onclick = () => FB.addComment({ scope: "email", draft: cur });
+$("#submit").onclick = () => FB.submit();
+FB.load().then(() => {
+  const it = FB.items; verdicts = Object.assign({}, FB.response.verdicts || {}); picked = {};
+  for (const [k, v] of Object.entries(FB.response.picked_subject || {})) picked[+k] = v;
+  for (const k of Object.keys(verdicts)) { verdicts[+k] = verdicts[k]; }
+  gnote = FB.response.general_note || "";
+  $("#title").textContent = it.title; $("#hint").textContent = it.instructions || "";
+  $("#gnote").value = gnote; $("#gnote").oninput = e => { gnote = e.target.value; FB.save(); };
+  FB.render();
+});
+</script>
+</body>
+</html>

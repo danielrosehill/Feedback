@@ -10,7 +10,9 @@ local page, and every comment on it comes back anchored to the exact spot it is 
 | A document (PDF) | `feedback document` | Drag across words, draw a box or pin a spot, then talk (or type); tag a category (Wording, Typography, Colour, Layout ...); "this page", "whole document"; a verdict per round |
 | A long list of items | `feedback new` | One answer per item from a set (Remove / Keep for now / Ask me ...), tick box or free text, with notes |
 | A diagram (Graphviz) | `feedback diagram` | Click boxes, connections and zones; answer and/or note |
-| Plain text, scripts, email drafts, images, audio, video | planned | Same model; see [`ROADMAP.md`](ROADMAP.md) |
+| Plain text, Markdown, scripts | `feedback text` | Select words and talk; ¶ numbers for paragraphs, 🎙 Section on headings, whole text; script preset adds Delivery / Timing / Pacing and read-aloud times |
+| Email drafts (one or a batch) | `feedback email` | ✓ Fine / ✎ Change per field (recipients, subject, attachments, body), pick a subject, select words in subject or body; a verdict per draft ("Approve as is" = send) |
+| Images, audio, video | planned | Same model; see [`ROADMAP.md`](ROADMAP.md) |
 
 The framework (what every mode must do, and why voice comes first) is in [`FRAMEWORK.md`](FRAMEWORK.md).
 
@@ -66,6 +68,40 @@ or per run: `FEEDBACK_ASR_URL`, `FEEDBACK_ASR_KEY`, `FEEDBACK_ASR_MODEL`, `FEEDB
 With no backend, `feedback transcribe --list` prints the audio files and
 `feedback set-transcript <session> <id> -f text.txt` stores a transcript made any other way.
 
+## Text review: scripts, drafts, Markdown
+
+```bash
+feedback text script.md --preset script --title "Episode 12 script v2"
+```
+
+The text is rendered as a readable page (Markdown: headings, lists, emphasis, links, code; plain
+`.txt` keeps its line breaks; `dir="auto"` per paragraph, so Hebrew and English mix). Select any
+words and press **Comment on selection**. Click a **¶ number** to comment on a paragraph, or
+**🎙 Section** on a heading to comment on everything under it. Every anchor is a character range in
+the source file, with the quote, 40 characters either side and the line numbers, so the agent edits
+the file directly. `--preset script` adds Delivery, Timing and Pacing, and shows the read-aloud time
+(150 wpm) per section and in total.
+
+## Email review: drafts before they're sent
+
+```bash
+feedback email draft.json          # one draft, or a JSON list of drafts (one tab each)
+```
+
+```jsonc
+{ "label": "Legal dept", "from": "me@example.com", "to": ["a@example.org"], "cc": [], "bcc": [],
+  "subjects": ["Option A", "Option B"],          // or "subject": "..."
+  "body_html": "<div dir=\"rtl\">...</div>",     // or "body_text"
+  "lang": "he", "attachments": [{"path": "letter.pdf"}] }
+```
+
+Each part of the email (From, To, Cc, Bcc, Subject, Attachments, Body) has **✓ Fine**, one tap, and
+**✎ Change**, which starts a voice comment. Proposed subject lines are offered side by side to pick
+from. You can select words in the subject or body, and attachments open in a new tab. Each draft
+gets its own verdict; **Approve as is** means send it. The HTML body is shown sanitised (no scripts
+or handlers), in its own direction. `result` gives, per draft: the verdict, the picked subject, each
+field's Fine or Change, and the comments.
+
 ## Diagram review
 
 For architecture diagrams, network maps and ER diagrams: the form *is* the diagram. Any Graphviz
@@ -93,6 +129,8 @@ feedback new items.json --template architecture-review
 | Skill | For |
 |---|---|
 | `document-review` | Voice (or typed) comments pinned to a PDF, transcribed, acted on, round after round |
+| `text-review` | The same for plain text and Markdown: scripts, drafts, notes |
+| `email-review` | Email drafts reviewed field by field before sending, one or a batch |
 | `feedback-panel` | The loop: build items, open, read the result, act, report outcomes, offer to keep the form |
 | `feedback-form-template` | Pick a template for the answers the user wants, or add a new template |
 | `feedback-form-library` | Run a saved form from its recipe, or save a session into the library |

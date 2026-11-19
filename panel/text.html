@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text feedback</title>
+<link rel="stylesheet" href="/static/review-common.css">
+<style>
+  article { background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.12); max-width:820px; width:100%; margin:0 auto; padding:28px 36px 40px 64px; font-size:17px; line-height:1.65; }
+  article.plain .blk { white-space:pre-wrap; }
+  .blk { position:relative; margin:0 0 .8em; }
+  .blk .pn { position:absolute; inset-inline-start:-48px; top:.1em; font-size:11px; color:var(--muted); border:1px solid var(--rule); border-radius:6px; padding:0 5px; cursor:pointer; background:#fff; user-select:none; }
+  .blk .pn:hover { border-color:var(--accent); color:var(--accent); }
+  .blk.hasc .pn { background:var(--pin); color:#fff; border-color:var(--pin); }
+  h1.blk, h2.blk, h3.blk, h4.blk, h5.blk, h6.blk { line-height:1.3; margin-top:1.2em; }
+  .secbtn { font-size:12px; margin-inline-start:10px; vertical-align:middle; font-weight:400; }
+  .rt { font-size:12px; color:var(--muted); font-weight:400; margin-inline-start:8px; }
+  .li { padding-inline-start:1.4em; }
+  .li .mk { position:absolute; inset-inline-start:0; color:var(--muted); }
+  pre.blk { background:#f6f7f9; padding:10px 12px; border-radius:6px; overflow:auto; font-size:14px; white-space:pre; }
+  code { background:#f1f2f5; padding:0 3px; border-radius:3px; font-size:.92em; }
+  .total { font-size:13px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Text feedback</h1>
+  <span class="total" id="total"></span>
+  <button id="docbtn">🎙 Whole text</button>
+  <span class="spacer"></span>
+  <span id="status">loading…</span>
+  <button class="primary" id="submit">Submit round</button>
+</header>
+<div id="hint"></div>
+<div id="micerr"></div>
+<main>
+  <div><article id="art"></article></div>
+  <aside>
+    <div class="round">
+      <label>Verdict on this version</label>
+      <div class="chips" id="verdicts"></div>
+      <label>Overall note (optional)</label>
+      <textarea id="gnote" dir="auto" placeholder="Anything about the round as a whole"></textarea>
+    </div>
+    <div id="list"></div>
+  </aside>
+</main>
+<div class="selpop" id="selpop"><button class="small" id="selrec">🎙 Comment on selection</button></div>
+<script src="/static/review-common.js"></script>
+<script>
+const $ = s => document.querySelector(s), esc = FB.esc;
+let verdict = null, gnote = "", pending = null;
+const hasCat = k => (FB.items.categories || []).includes(k);
+const fmtRead = s => s >= 60 ? Math.floor(s / 60) + " min " + (s % 60 ? (s % 60) + " s" : "") : s + " s";
+
+function range(c) {
+  const it = FB.items;
+  if (c.scope === "span") return [c.start, c.end];
+  if (c.scope === "paragraph") { const b = it.blocks[c.block]; return [b.start, b.end]; }
+  if (c.scope === "section") { const s = it.sections[c.section]; return [s.start, s.end]; }
+  return [-1, -1];
+}
+FB.describe = c => {
+  const it = FB.items;
+  if (c.scope === "document") return { where: "Whole text", doc: true };
+  if (c.scope === "section") return { where: "Section: " + it.sections[c.section].title, doc: true };
+  const [s, e] = range(c), q = it.text.slice(s, e);
+  return { where: c.scope === "paragraph" ? "Paragraph " + (c.block + 1) : "Selection", quote: q.length > 300 ? q.slice(0, 300) + "…" : q };
+};
+FB.extra = () => ({ verdict, general_note: gnote });
+
+function ordered() {
+  const o = { document: 0, section: 1, paragraph: 2, span: 3 };
+  return [...FB.comments].sort((a, b) => (a.scope === "document" ? -1 : range(a)[0]) - (b.scope === "document" ? -1 : range(b)[0]) || o[a.scope] - o[b.scope]);
+}
+
+// Render one segment, split where span comments start or end, so every piece keeps its source offset.
+function segHTML(seg, spans) {
+  const a = seg.src, b = seg.src + seg.t.length;
+  const cuts = new Set([a, b]);
+  for (const c of spans) { if (c.start > a && c.start < b) cuts.add(c.start); if (c.end > a && c.end < b) cuts.add(c.end); }
+  const pts = [...cuts].sort((x, y) => x - y); let h = "";
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i], p1 = pts[i + 1], txt = esc(seg.t.slice(p0 - a, p1 - a));
+    const c = [...spans].reverse().find(c => c.start <= p0 && c.end >= p1);
+    let inner = `<span data-src="${p0}">${txt}</span>`;
+    if (c) inner = `<mark class="c${c.id === FB.sel ? " sel" : ""}" data-id="${c.id}">${inner}</mark>`;
+    h += inner;
+  }
+  if (seg.s === "b") h = `<strong>${h}</strong>`; else if (seg.s === "i") h = `<em>${h}</em>`;
+  else if (seg.s === "code") h = `<code>${h}</code>`; else if (seg.s === "a") h = `<a href="${esc(seg.href)}" target="_blank" rel="noopener">${h}</a>`;
+  return h;
+}
+
+FB.render = function () {
+  const it = FB.items, art = $("#art"), list = ordered();
+  list.forEach((c, i) => c._n = i + 1);
+  const spans = FB.comments.filter(c => c.scope === "span");
+  const paraC = new Set(FB.comments.filter(c => c.scope === "paragraph").map(c => c.block));
+  art.className = it.markdown ? "" : "plain";
+  let h = "";
+  for (const b of it.blocks) {
+    const body = b.segs.map(s => segHTML(s, spans)).join("") || "&nbsp;";
+    const pn = `<span class="pn" data-pn="${b.i}" title="Comment on this paragraph">¶${b.i + 1}</span>`;
+    const cls = "blk" + (paraC.has(b.i) ? " hasc" : "");
+    if (b.kind[0] === "h") {
+      const sec = it.sections.findIndex(s => s.first_block === b.i);
+      const rt = it.show_read_time && sec >= 0 ? `<span class="rt">≈ ${fmtRead(it.sections[sec].read_s)} read aloud</span>` : "";
+      h += `<${b.kind} class="${cls}" dir="auto" data-i="${b.i}">${pn}${body}${rt}<button class="small secbtn" data-sec="${sec}">🎙 Section</button></${b.kind}>`;
+    } else if (b.kind === "li") h += `<div class="${cls} li" dir="auto" data-i="${b.i}">${pn}<span class="mk">${/\d/.test(b.marker) ? esc(b.marker) : "•"}</span>${body}</div>`;
+    else if (b.kind === "code") h += `<pre class="${cls}" data-i="${b.i}">${pn}${body}</pre>`;
+    else h += `<p class="${cls}" dir="auto" data-i="${b.i}">${pn}${body}</p>`;
+  }
+  art.innerHTML = h;
+  art.querySelectorAll("[data-pn]").forEach(e => e.onclick = ev => { ev.stopPropagation(); FB.addComment({ scope: "paragraph", block: +e.dataset.pn, category: hasCat("Wording") ? "Wording" : null }); });
+  art.querySelectorAll("[data-sec]").forEach(e => e.onclick = ev => { ev.stopPropagation(); FB.addComment({ scope: "section", section: +e.dataset.sec, category: hasCat("Structure") ? "Structure" : null }); });
+  art.querySelectorAll("mark.c").forEach(m => m.onclick = () => { if (!window.getSelection().isCollapsed) return; FB.sel = m.dataset.id; FB.render(); document.getElementById("card-" + m.dataset.id)?.scrollIntoView({ block: "nearest" }); });
+  const L = $("#list"); L.innerHTML = "";
+  if (!list.length) L.innerHTML = '<div class="empty">No comments yet. Select words and press “Comment on selection”, click a ¶ number for a paragraph, 🎙 Section on a heading, or “Whole text”.</div>';
+  for (const c of list) L.appendChild(FB.card(c, c._n));
+  FB.verdictChips($("#verdicts"), verdict, v => { verdict = v; FB.render(); FB.save(); });
+};
+
+function srcOf(node, off) {
+  let el = node.nodeType === 3 ? node.parentElement : node;
+  if (node.nodeType !== 3) {  // element boundary: use the child at that offset
+    const child = node.childNodes[off] || node.childNodes[off - 1]; const sp = child && (child.closest ? child.closest("[data-src]") : child.parentElement?.closest("[data-src]")) || (child && child.querySelector && child.querySelector("[data-src]"));
+    if (!sp) return null; return +sp.dataset.src + (node.childNodes[off] ? 0 : sp.textContent.length);
+  }
+  const sp = el.closest("[data-src]"); return sp ? +sp.dataset.src + off : null;
+}
+document.addEventListener("mouseup", ev => {
+  if (ev.target.closest("#selpop")) return;
+  setTimeout(() => {
+    const s = window.getSelection(), pop = $("#selpop");
+    if (!s.rangeCount || s.isCollapsed || !$("#art").contains(s.anchorNode)) { pop.style.display = "none"; pending = null; return; }
+    const r = s.getRangeAt(0);
+    let a = srcOf(r.startContainer, r.startOffset), b = srcOf(r.endContainer, r.endOffset);
+    if (a == null || b == null) { pop.style.display = "none"; return; }
+    if (a > b) [a, b] = [b, a];
+    const t = FB.items.text; while (a < b && /\s/.test(t[a])) a++; while (b > a && /\s/.test(t[b - 1])) b--;
+    if (b <= a) { pop.style.display = "none"; return; }
+    pending = { start: a, end: b };
+    const rc = r.getBoundingClientRect();
+    pop.style.left = (rc.left + window.scrollX) + "px"; pop.style.top = (rc.bottom + window.scrollY + 6) + "px"; pop.style.display = "block";
+  }, 0);
+});
+$("#selrec").onclick = () => {
+  if (!pending) return; const t = FB.items.text, p = pending; pending = null; $("#selpop").style.display = "none";
+  window.getSelection().removeAllRanges();
+  FB.addComment({ scope: "span", start: p.start, end: p.end, quote: t.slice(p.start, p.end), prefix: t.slice(Math.max(0, p.start - 40), p.start), suffix: t.slice(p.end, p.end + 40), category: hasCat("Wording") ? "Wording" : null });
+};
+$("#docbtn").onclick = () => FB.addComment({ scope: "document" });
+$("#submit").onclick = () => FB.submit();
+FB.load().then(() => {
+  const it = FB.items; verdict = FB.response.verdict || null; gnote = FB.response.general_note || "";
+  $("#title").textContent = it.title; $("#hint").textContent = it.instructions || "";
+  const words = it.sections.reduce((n, s) => n + s.words, 0), secs = it.sections.reduce((n, s) => n + s.read_s, 0);
+  $("#total").textContent = words + " words" + (it.show_read_time ? " · ≈ " + fmtRead(secs) + " read aloud" : "");
+  $("#gnote").value = gnote; $("#gnote").oninput = e => { gnote = e.target.value; FB.save(); };
+  FB.render();
+});
+</script>
+</body>
+</html>

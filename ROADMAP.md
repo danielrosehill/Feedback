@@ -18,8 +18,8 @@ For a sendable artefact (an email, a post), "Approve as is" means "send it".
 | # | Mode | Status | Command (planned) |
 |---|---|---|---|
 | 1 | Designed document (PDF) | **built** v0.7 | `feedback document file.pdf` |
-| 2 | Plain text / Markdown (scripts, drafts, notes) | next | `feedback text file.md` |
-| 3 | Email draft | next | `feedback email draft.json` |
+| 2 | Plain text / Markdown (scripts, drafts, notes) | **built** v0.8 | `feedback text file.md` |
+| 3 | Email draft | **built** v0.8 | `feedback email draft.json` |
 | 4 | List of decisions | built | `feedback new items.json` |
 | 5 | Diagram | built | `feedback diagram a.dot` |
 | 6 | Image (incl. AI-generated, variants) | planned | `feedback image a.png [b.png …]` |
@@ -42,7 +42,9 @@ For a sendable artefact (an email, a post), "Approve as is" means "send it".
 - Later: selection across page breaks; re-anchoring old comments onto the next version by quote
   (W3C `TextQuoteSelector` exact + prefix + suffix); side-by-side diff of vN and vN+1.
 
-## 2. Plain text / Markdown: scripts, drafts, notes
+## 2. Plain text / Markdown: scripts, drafts, notes (built v0.8)
+
+Not built yet from this section: the TTS read-aloud button, and re-finding comments in the next version.
 
 For anything that is words, not design: podcast scripts, essays, posts, prompts, a README, a
 transcript. No PDF round trip.
@@ -60,7 +62,9 @@ transcript. No PDF round trip.
   (TTS) so the user can react to how it sounds.
 - **Result:** comments in source order with line ranges; the agent edits the source file directly.
 
-## 3. Email draft
+## 3. Email draft (built v0.8)
+
+Not built yet from this section: highlighting earlier selections inside the body, and sending from the page.
 
 Review a draft without opening a mail client. **Field by field**, because each part of an email
 fails differently.

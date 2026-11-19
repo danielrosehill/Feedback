@@ -67,9 +67,16 @@ MAX_AUDIO = 60 * 1024 * 1024
 CATEGORY_PRESETS = {
     "designed": ["Wording", "Structure", "Typography", "Colour", "Layout & spacing", "Images & charts", "Other"],
     "text": ["Wording", "Structure", "Tone", "Facts", "Other"],
+    "script": ["Wording", "Structure", "Tone", "Facts", "Delivery", "Timing", "Pacing", "Other"],
+    "email": ["Recipients", "Subject", "Wording", "Tone", "Facts", "Attachments", "Other"],
 }
 WORDING_INTENTS = ["Rephrase", "Replace", "Delete", "Insert", "Keep as is"]
 VERDICTS = ["Approve as is", "Approve with these changes", "Needs another round"]
+FIELD_INTENTS = ["Fine", "Change"]  # email: per-field quick answers
+TEXT_SCOPES = ("span", "paragraph", "section", "document")
+EMAIL_SCOPES = ("field", "span", "email")
+EMAIL_FIELDS = ("from", "to", "cc", "bcc", "subject", "attachments", "body")
+WPM = 150  # read-aloud estimate for scripts
 SCOPES = ("point", "page", "document", "text", "area")
 HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
 TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
@@ -296,6 +303,11 @@ def make_handler(sess):
                                            "intents": WORDING_INTENTS, "verdicts": VERDICTS,
                                            "response": read_json(sess / "response.json", {}),
                                            "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
+                if items.get("mode") in ("text", "email"):
+                    return self.send(200, {"items": items, "comments": read_json(sess / "comments.json", []),
+                                           "intents": WORDING_INTENTS, "field_intents": FIELD_INTENTS, "verdicts": VERDICTS,
+                                           "response": read_json(sess / "response.json", {}),
+                                           "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
                 return self.send(200, {"items": items, "response": read_json(sess / "response.json", {}),
                                        "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
             if path == "/api/outcomes":
@@ -304,6 +316,20 @@ def make_handler(sess):
                 cid = dict(kv.split("=", 1) for kv in self.path.partition("?")[2].split("&") if "=" in kv).get("id", "")
                 c = next((c for c in read_json(sess / "comments.json", []) if c["id"] == cid), None)
                 return self.send(200, anchor_text(sess, c) if c else {})
+            m = re.match(r"^/static/([a-z0-9-]+\.(js|css))$", path)
+            if m and (ROOT / "panel" / m.group(1)).exists():
+                return self.send(200, (ROOT / "panel" / m.group(1)).read_bytes(),
+                                 "text/javascript" if m.group(2) == "js" else "text/css")
+            m = re.match(r"^/files/(\d+)/(\d+)$", path)  # email attachment: draft / index
+            if m:
+                items = read_json(sess / "items.json") or {}
+                try:
+                    att = items["drafts"][int(m.group(1))]["attachments"][int(m.group(2))]
+                except (KeyError, IndexError):
+                    return self.send(404, {"error": "not found"})
+                f = sess / "files" / att["file"]
+                import mimetypes
+                return self.send(200, f.read_bytes(), mimetypes.guess_type(att["name"])[0] or "application/octet-stream")
             m = re.match(r"^/pages/(\d+)\.png$", path)
             if m and (sess / "pages" / f"{m.group(1)}.png").exists():
                 return self.send(200, (sess / "pages" / f"{m.group(1)}.png").read_bytes(), "image/png")
@@ -371,6 +397,8 @@ def make_handler(sess):
             except json.JSONDecodeError:
                 return self.send(400, {"error": "bad json"})
             items = read_json(sess / "items.json")
+            if items.get("mode") in ("text", "email"):
+                return self.post_textual(items, data)
             npages = len(items.get("pages", []))
             with LOCK:
                 old = {c["id"]: c for c in read_json(sess / "comments.json", [])}
@@ -414,6 +442,70 @@ def make_handler(sess):
                         "created": prev.get("created", now()),
                         "submitted_at": now() if submit else prev.get("submitted_at"),
                         "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
+                write_json(sess / "response.json", resp)
+            self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"], "comments": len(out)})
+
+        def post_textual(self, items, data):
+            """Comments for text and email sessions: anchors are character ranges, not page geometry."""
+            mode = items["mode"]
+            ndrafts = len(items.get("drafts", []))
+            cats = items.get("categories") or []
+            intents = WORDING_INTENTS + (FIELD_INTENTS if mode == "email" else [])
+            txt = lambda v, n=2000: str(v or "")[:n]
+            with LOCK:
+                old = {c["id"]: c for c in read_json(sess / "comments.json", [])}
+                out = []
+                for c in data.get("comments") or []:
+                    cid = str(c.get("id", ""))
+                    if not CID_RE.match(cid):
+                        continue
+                    scopes = TEXT_SCOPES if mode == "text" else EMAIL_SCOPES
+                    scope = c.get("scope") if c.get("scope") in scopes else scopes[0]
+                    e = {"id": cid, "scope": scope, "note": txt(c.get("note"), 20000),
+                         "created": old.get(cid, {}).get("created", now())}
+                    for k in ("start", "end", "block", "section"):
+                        if isinstance(c.get(k), int) and c[k] >= 0:
+                            e[k] = c[k]
+                    for k in ("quote", "prefix", "suffix"):
+                        if c.get(k):
+                            e[k] = txt(c[k])
+                    if mode == "email":
+                        d = c.get("draft")
+                        if not (isinstance(d, int) and 0 <= d < ndrafts):
+                            continue
+                        e["draft"] = d
+                        if scope != "email":
+                            if c.get("field") not in EMAIL_FIELDS:
+                                continue
+                            e["field"] = c["field"]
+                    if c.get("category") in cats:
+                        e["category"] = c["category"]
+                    if c.get("intent") in intents:
+                        e["intent"] = c["intent"]
+                    audio = str(c.get("audio") or "")
+                    if audio and (sess / "audio" / audio).exists() and audio.startswith(cid + "."):
+                        e["audio"] = audio
+                        e["duration_s"] = c.get("duration_s") if isinstance(c.get("duration_s"), (int, float)) else None
+                        prev = old.get(cid, {})
+                        if prev.get("audio") == audio and prev.get("transcript"):
+                            e["transcript"], e["transcript_by"] = prev["transcript"], prev.get("transcript_by")
+                    if e.get("audio") or e["note"].strip() or e.get("intent") or e.get("category"):
+                        out.append(e)
+                write_json(sess / "comments.json", out)
+                submit = bool(data.get("submit"))
+                prev = read_json(sess / "response.json", {})
+                resp = {"status": "submitted" if submit else "draft", "updated": now(),
+                        "verdict": data.get("verdict") if data.get("verdict") in VERDICTS else prev.get("verdict"),
+                        "general_note": txt(data.get("general_note") if "general_note" in data else prev.get("general_note"), 20000),
+                        "created": prev.get("created", now()),
+                        "submitted_at": now() if submit else prev.get("submitted_at"),
+                        "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
+                if mode == "email":
+                    v = data.get("verdicts") if isinstance(data.get("verdicts"), dict) else prev.get("verdicts", {})
+                    resp["verdicts"] = {str(k): x for k, x in v.items() if x in VERDICTS and str(k).isdigit() and int(k) < ndrafts}
+                    ps = data.get("picked_subject") if isinstance(data.get("picked_subject"), dict) else prev.get("picked_subject", {})
+                    resp["picked_subject"] = {str(k): x for k, x in ps.items() if isinstance(x, int) and str(k).isdigit()
+                                              and int(k) < ndrafts and 0 <= x < len(items["drafts"][int(k)]["subjects"])}
                 write_json(sess / "response.json", resp)
             self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"], "comments": len(out)})
 
@@ -879,6 +971,390 @@ def print_document_result(out):
             print(f"\nOutcome: {r['outcome']['state']} {r['outcome'].get('text', '')}")
 
 
+# ---------------------------------------------------------------- text review (plain text / Markdown)
+
+INLINE_RE = re.compile(r"`([^`\n]+)`|\*\*(.+?)\*\*|__(.+?)__|(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)|(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?!\w)|\[([^\]\n]+)\]\(([^)\s]+)\)")
+
+
+def inline_segments(src, start, end, markdown=True):
+    """Split source[start:end] into display segments that keep their source offsets:
+    [{"t": text, "src": offset, "s": style, "href": url}]. Markup characters are dropped, so the page
+    shows clean text while every displayed character still maps back to its place in the file."""
+    segs, pos = [], start
+    if not markdown:
+        return [{"t": src[start:end], "src": start}] if end > start else []
+    text = src[start:end]
+    for m in INLINE_RE.finditer(text):
+        if m.start() > pos - start:
+            segs.append({"t": text[pos - start:m.start()], "src": pos})
+        for gi, style in ((1, "code"), (2, "b"), (3, "b"), (4, "i"), (5, "i"), (6, "a")):
+            if m.group(gi) is not None:
+                seg = {"t": m.group(gi), "src": start + m.start(gi), "s": style}
+                if style == "a":
+                    seg["href"] = m.group(7)
+                segs.append(seg)
+                break
+        pos = start + m.end()
+    if pos < end:
+        segs.append({"t": text[pos - start:], "src": pos})
+    return segs
+
+
+def parse_text(src, markdown=True):
+    """Blocks (heading / paragraph / list item / code) with source ranges, and sections by heading."""
+    blocks, i, n = [], 0, len(src)
+    lines = src.splitlines(keepends=True)
+    offs, o = [], 0
+    for ln in lines:
+        offs.append(o); o += len(ln)
+    k = 0
+    para = None
+
+    def flush():
+        nonlocal para
+        if para:
+            s0, e0 = para
+            while e0 > s0 and src[e0 - 1] in "\r\n":
+                e0 -= 1
+            blocks.append({"kind": "p", "start": s0, "end": e0})
+        para = None
+
+    while k < len(lines):
+        ln, st = lines[k], offs[k]
+        body = ln.rstrip("\r\n")
+        if markdown and body.lstrip().startswith("```"):
+            flush()
+            j = k + 1
+            while j < len(lines) and not lines[j].lstrip().startswith("```"):
+                j += 1
+            cs = offs[k + 1] if k + 1 < len(lines) else st + len(ln)
+            ce = offs[j] if j < len(lines) else n
+            while ce > cs and src[ce - 1] in "\r\n":
+                ce -= 1
+            blocks.append({"kind": "code", "start": cs, "end": ce})
+            k = j + 1
+            continue
+        if not body.strip():
+            flush(); k += 1; continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", body) if markdown else None
+        if m:
+            flush()
+            blocks.append({"kind": "h" + str(len(m.group(1))), "start": st + m.start(2), "end": st + len(body.rstrip())})
+            k += 1; continue
+        m = re.match(r"^(\s*)([-*+]|\d+[.)])\s+", body) if markdown else None
+        if m:
+            flush()
+            blocks.append({"kind": "li", "start": st + m.end(), "end": st + len(body.rstrip()),
+                           "marker": m.group(2), "indent": len(m.group(1))})
+            k += 1; continue
+        if para is None:
+            para = [st, st + len(ln)]
+        else:
+            para[1] = st + len(ln)
+        k += 1
+    flush()
+    sections, cur = [], None
+    for bi, b in enumerate(blocks):
+        if b["kind"].startswith("h"):
+            cur = {"title": src[b["start"]:b["end"]], "level": int(b["kind"][1]), "start": b["start"], "first_block": bi}
+            sections.append(cur)
+        elif cur is None:
+            cur = {"title": "(opening)", "level": 0, "start": b["start"], "first_block": bi}
+            sections.append(cur)
+        b["section"] = len(sections) - 1
+    for si, sec in enumerate(sections):
+        if si + 1 < len(sections):
+            e = src.rfind("\n", 0, sections[si + 1]["start"]) + 1  # the next heading's line start
+            while e > sec["start"] and src[e - 1] in " \t\r\n":
+                e -= 1
+            sec["end"] = e
+        else:
+            sec["end"] = n
+        words = len(re.findall(r"\w+", src[sec["start"]:sec["end"]]))
+        sec["words"], sec["read_s"] = words, round(words / WPM * 60)
+    for bi, b in enumerate(blocks):
+        b["i"] = bi
+        b["segs"] = inline_segments(src, b["start"], b["end"], markdown and b["kind"] != "code")
+    return blocks, sections
+
+
+def new_session(slug):
+    sess = HOME / f"{dt.datetime.now():%Y-%m-%d-%H%M%S}-{slug}"
+    sess.mkdir(parents=True)
+    return sess
+
+
+def cmd_text(a):
+    src_path = Path(a.file).expanduser().resolve()
+    if not src_path.exists():
+        die(f"{src_path} not found")
+    src = src_path.read_text()
+    markdown = src_path.suffix.lower() in (".md", ".markdown", ".mdx") or a.markdown
+    blocks, sections = parse_text(src, markdown)
+    preset = a.preset or "text"
+    cats = [c.strip() for c in a.categories.split(",") if c.strip()] if a.categories else CATEGORY_PRESETS[preset]
+    sess = new_session(slugify(a.name or src_path.stem))
+    shutil.copy(src_path, sess / ("source" + src_path.suffix))
+    items = {"mode": "text", "title": a.title or src_path.name, "source": str(src_path), "preset": preset,
+             "markdown": markdown, "categories": cats, "text": src, "blocks": blocks, "sections": sections,
+             "show_read_time": preset == "script",
+             "instructions": a.instructions or "Select any words and talk (or type). Click a paragraph number for "
+             "the paragraph, a heading's 🎙 for its section, 'Whole text' for overall points. Tag a category, "
+             "pick a verdict and Submit the round.", "groups": [], "input": "text-review"}
+    write_json(sess / "items.json", items)
+    write_json(sess / "comments.json", [])
+    shutil.copy(ROOT / "panel" / "text.html", sess / "page.html")
+    info = start_background(sess, a.port)
+    opened = (not a.no_open) and open_browser(info["url"])
+    print(json.dumps({"session": str(sess), "url": info["url"], "mode": "text", "blocks": len(blocks),
+                      "sections": len(sections), "words": sum(s["words"] for s in sections),
+                      "browser_opened": bool(opened)}, indent=2))
+
+
+def line_of(src, off):
+    return src.count("\n", 0, off) + 1
+
+
+def text_result(sess):
+    items = read_json(sess / "items.json")
+    src = items["text"]
+    resp = read_json(sess / "response.json", {})
+    oc = read_json(sess / "outcomes.json", {})
+    order = {"document": 0, "section": 1, "paragraph": 2, "span": 3}
+    comments = sorted(read_json(sess / "comments.json", []),
+                      key=lambda c: (0 if c["scope"] == "document" else 1, c.get("start", 0), order[c["scope"]]))
+    rows = []
+    for i, c in enumerate(comments, 1):
+        st, en = c.get("start"), c.get("end")
+        anchor = {}
+        if c["scope"] == "paragraph" and c.get("block") is not None and c["block"] < len(items["blocks"]):
+            b = items["blocks"][c["block"]]; st, en = b["start"], b["end"]
+        if c["scope"] == "section" and c.get("section") is not None and c["section"] < len(items["sections"]):
+            sc = items["sections"][c["section"]]; st, en = sc["start"], sc["end"]; anchor["section"] = sc["title"]
+        if st is not None and en is not None and 0 <= st <= en <= len(src):
+            q = src[st:en]
+            anchor.update({"start": st, "end": en, "lines": [line_of(src, st), line_of(src, max(st, en - 1))],
+                           "quote": q if len(q) <= 1200 else q[:1200] + "…",
+                           "prefix": src[max(0, st - 40):st], "suffix": src[en:en + 40]})
+        rows.append({"n": i, "id": c["id"], "scope": c["scope"], "category": c.get("category"), "intent": c.get("intent"),
+                     "anchor": anchor, "note": c.get("note", ""), "transcript": c.get("transcript"),
+                     "audio": str(sess / "audio" / c["audio"]) if c.get("audio") else None,
+                     "duration_s": c.get("duration_s"), "outcome": oc.get(c["id"])})
+    return {"session": str(sess), "mode": "text", "title": items.get("title"), "source": items.get("source"),
+            "status": resp.get("status", "untouched"), "rounds": resp.get("rounds", 0), "verdict": resp.get("verdict"),
+            "general_note": resp.get("general_note", ""), "comments": rows,
+            "by_category": {k: [r["n"] for r in rows if (r.get("category") or "Uncategorised") == k]
+                            for k in dict.fromkeys((r.get("category") or "Uncategorised") for r in rows)},
+            "untranscribed": sum(1 for r in rows if r["audio"] and not r["transcript"])}
+
+
+def print_head(out):
+    print(f"# Feedback on {out['title']}  ({out['status']}, round {out['rounds']}, {len(out['comments'])} comments"
+          + (f", {out['untranscribed']} not yet transcribed" if out["untranscribed"] else "") + ")")
+    print(f"Source: {out['source']}")
+    if out.get("verdict"):
+        print(f"Verdict: {out['verdict']}")
+    if out.get("general_note"):
+        print(f"General note: {out['general_note']}")
+    if out["comments"] and out.get("by_category"):
+        print("By category: " + "; ".join(f"{k} {', '.join(map(str, v))}" for k, v in out["by_category"].items()))
+
+
+def print_said(r):
+    if r["transcript"]:
+        print(f"\nSaid: {r['transcript']}")
+    elif r["audio"]:
+        print(f"\nSaid: (not transcribed yet: {r['audio']})")
+    if r["note"]:
+        print(f"\nWrote: {r['note']}")
+    if r.get("outcome"):
+        print(f"\nOutcome: {r['outcome']['state']} {r['outcome'].get('text', '')}")
+
+
+def print_text_result(out):
+    print_head(out)
+    for r in out["comments"]:
+        an = r["anchor"]
+        where = {"document": "Whole text", "section": f"Section \"{an.get('section', '')}\"",
+                 "paragraph": "Paragraph", "span": "Selection"}[r["scope"]]
+        if an.get("lines"):
+            where += f", line {an['lines'][0]}" + (f"-{an['lines'][1]}" if an["lines"][1] != an["lines"][0] else "")
+        tags = " · ".join(t for t in (r.get("category"), r.get("intent")) if t)
+        print(f"\n## {r['n']}. {where}" + (f" — {tags}" if tags else "") + f"  [{r['id']}]")
+        if an.get("quote") and r["scope"] != "section":
+            print(f"> \"{an['quote'][:600]}\"")
+        print_said(r)
+
+
+# ---------------------------------------------------------------- email review
+
+def html_to_text(html):
+    """Visible text of an HTML body, for anchoring and the agent's reading (tags dropped, blocks broken)."""
+    from html.parser import HTMLParser
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__(); self.out = []; self.skip = 0
+        def handle_starttag(self, t, attrs):
+            if t in ("script", "style", "head"):
+                self.skip += 1
+            if t in ("br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "table"):
+                self.out.append("\n")
+        def handle_endtag(self, t):
+            if t in ("script", "style", "head"):
+                self.skip -= 1
+        def handle_data(self, d):
+            if not self.skip:
+                self.out.append(d)
+    p = P(); p.feed(html)
+    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t]+", " ", "".join(p.out))).strip()
+
+
+SAFE_TAGS = {"p", "div", "span", "br", "b", "strong", "i", "em", "u", "a", "ul", "ol", "li", "table", "tr", "td", "th",
+             "tbody", "thead", "h1", "h2", "h3", "h4", "blockquote", "img", "hr", "small", "sup", "sub", "pre", "code"}
+SAFE_ATTRS = {"dir", "lang", "style", "href", "src", "alt", "width", "height", "align", "colspan", "rowspan"}
+
+
+def sanitize_html(html):
+    """Keep layout tags and dir/lang/style; drop scripts, event handlers and javascript: links."""
+    from html.parser import HTMLParser
+    from html import escape
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True); self.out = []; self.skip = 0
+        def handle_starttag(self, t, attrs):
+            if t in ("script", "style", "head", "iframe", "object"):
+                self.skip += 1; return
+            if self.skip or t not in SAFE_TAGS:
+                return
+            keep = [(k, v) for k, v in attrs if k in SAFE_ATTRS and v is not None
+                    and not re.match(r"\s*javascript:", v, re.I)]
+            self.out.append(f"<{t}" + "".join(f' {k}="{escape(v)}"' for k, v in keep) + ">")
+        def handle_endtag(self, t):
+            if t in ("script", "style", "head", "iframe", "object"):
+                self.skip = max(0, self.skip - 1); return
+            if not self.skip and t in SAFE_TAGS and t not in ("br", "img", "hr"):
+                self.out.append(f"</{t}>")
+        def handle_data(self, d):
+            if not self.skip:
+                self.out.append(escape(d))
+    p = P(); p.feed(html)
+    return "".join(p.out)
+
+
+def cmd_email(a):
+    src_path = Path(a.file).expanduser().resolve()
+    data = read_json(src_path)
+    if data is None:
+        die(f"{src_path} not found")
+    raw = data if isinstance(data, list) else data.get("drafts", [data])
+    sess = new_session(slugify(a.name or src_path.stem))
+    (sess / "files").mkdir()
+    drafts = []
+    for di, d in enumerate(raw):
+        lst = lambda v: [v] if isinstance(v, str) else list(v or [])
+        subjects = lst(d.get("subjects") or d.get("subject") or [""])
+        body_html = d.get("body_html")
+        body_text = d.get("body_text")
+        if body_html is None and body_text is None:
+            die(f"draft {di + 1}: needs body_html or body_text")
+        atts = []
+        for ai, att in enumerate(d.get("attachments") or []):
+            pth = Path(att["path"] if isinstance(att, dict) else att).expanduser()
+            if not pth.exists():
+                die(f"draft {di + 1}: attachment {pth} not found")
+            fname = f"{di}-{ai}{pth.suffix}"
+            shutil.copy(pth, sess / "files" / fname)
+            atts.append({"name": (att.get("name") if isinstance(att, dict) else None) or pth.name,
+                         "size": pth.stat().st_size, "file": fname, "path": str(pth)})
+        drafts.append({"i": di, "label": d.get("label") or ", ".join(lst(d.get("to"))) or f"Draft {di + 1}",
+                       "from": d.get("from", ""), "to": lst(d.get("to")), "cc": lst(d.get("cc")), "bcc": lst(d.get("bcc")),
+                       "subjects": subjects, "body_html": sanitize_html(body_html) if body_html else None,
+                       "body_text": body_text if body_html is None else html_to_text(body_html),
+                       "lang": d.get("lang", ""), "dir": d.get("dir") or ("rtl" if d.get("lang") in ("he", "ar", "fa", "ur") else "auto"),
+                       "thread": d.get("thread"), "attachments": atts})
+    cats = [c.strip() for c in a.categories.split(",") if c.strip()] if a.categories else CATEGORY_PRESETS["email"]
+    items = {"mode": "email", "title": a.title or (drafts[0]["subjects"][0] if len(drafts) == 1 else f"{len(drafts)} email drafts"),
+             "source": str(src_path), "categories": cats, "drafts": drafts, "groups": [], "input": "email-review",
+             "instructions": a.instructions or "Each part of the email has ✓ Fine and ✎ Change. Fine is one tap; "
+             "Change (or selecting words in the subject or body) starts a voice comment. Pick a subject if there are "
+             "several. Give each draft a verdict: Approve as is means send it."}
+    write_json(sess / "items.json", items)
+    write_json(sess / "comments.json", [])
+    shutil.copy(ROOT / "panel" / "email.html", sess / "page.html")
+    info = start_background(sess, a.port)
+    opened = (not a.no_open) and open_browser(info["url"])
+    print(json.dumps({"session": str(sess), "url": info["url"], "mode": "email", "drafts": len(drafts),
+                      "browser_opened": bool(opened)}, indent=2))
+
+
+def email_result(sess):
+    items = read_json(sess / "items.json")
+    resp = read_json(sess / "response.json", {})
+    oc = read_json(sess / "outcomes.json", {})
+    comments = read_json(sess / "comments.json", [])
+    forder = {f: i for i, f in enumerate(("email",) + EMAIL_FIELDS)}
+    out_drafts, n = [], 0
+    for d in items["drafts"]:
+        mine = sorted([c for c in comments if c.get("draft") == d["i"]],
+                      key=lambda c: (forder.get(c.get("field", "email"), 0), c.get("start", 0)))
+        fields = {}
+        rows = []
+        for c in mine:
+            n += 1
+            f = c.get("field", "email")
+            changed = c.get("intent") == "Change" or c["scope"] == "span" or (c.get("note") or "").strip() or c.get("audio")
+            if f != "email":
+                if changed:
+                    fields[f] = "Change"
+                elif c.get("intent") == "Fine" and fields.get(f) != "Change":
+                    fields[f] = "Fine"
+            anchor = {"field": f}
+            for k in ("quote", "prefix", "suffix", "start", "end"):
+                if k in c:
+                    anchor[k] = c[k]
+            rows.append({"n": n, "id": c["id"], "scope": c["scope"], "category": c.get("category"), "intent": c.get("intent"),
+                         "anchor": anchor, "note": c.get("note", ""), "transcript": c.get("transcript"),
+                         "audio": str(sess / "audio" / c["audio"]) if c.get("audio") else None,
+                         "duration_s": c.get("duration_s"), "outcome": oc.get(c["id"])})
+        pick = (resp.get("picked_subject") or {}).get(str(d["i"]))
+        out_drafts.append({"draft": d["i"], "label": d["label"], "to": d["to"], "cc": d["cc"],
+                           "verdict": (resp.get("verdicts") or {}).get(str(d["i"])),
+                           "subject_picked": d["subjects"][pick] if pick is not None else (d["subjects"][0] if len(d["subjects"]) == 1 else None),
+                           "subject_options": d["subjects"], "fields": fields, "comments": rows})
+    allrows = [r for dd in out_drafts for r in dd["comments"]]
+    return {"session": str(sess), "mode": "email", "title": items.get("title"), "source": items.get("source"),
+            "status": resp.get("status", "untouched"), "rounds": resp.get("rounds", 0), "verdict": resp.get("verdict"),
+            "general_note": resp.get("general_note", ""), "drafts": out_drafts, "comments": allrows,
+            "untranscribed": sum(1 for r in allrows if r["audio"] and not r["transcript"])}
+
+
+def print_email_result(out):
+    print_head(out)
+    for d in out["drafts"]:
+        print(f"\n# Draft {d['draft'] + 1}: {d['label']}  — verdict: {d['verdict'] or '(none)'}")
+        if len(d["subject_options"]) > 1:
+            print(f"Subject picked: {d['subject_picked'] or '(none picked)'}  (of {len(d['subject_options'])})")
+        if d["fields"]:
+            print("Fields: " + ", ".join(f"{k} {v}" for k, v in d["fields"].items()))
+        for r in d["comments"]:
+            an = r["anchor"]
+            if r["scope"] == "field" and r.get("intent") == "Fine" and not (r["note"] or r["audio"]):
+                continue
+            where = "Whole email" if r["scope"] == "email" else f"{an['field'].capitalize()}" + (" (selection)" if r["scope"] == "span" else "")
+            tags = " · ".join(t for t in (r.get("category"), r.get("intent")) if t)
+            print(f"\n## {r['n']}. {where}" + (f" — {tags}" if tags else "") + f"  [{r['id']}]")
+            if an.get("quote"):
+                print(f"> \"{an['quote'][:600]}\"")
+            print_said(r)
+
+
+RESULTS = {"document": (lambda s: document_result(s), lambda o: print_document_result(o)),
+           "text": (lambda s: text_result(s), lambda o: print_text_result(o)),
+           "email": (lambda s: email_result(s), lambda o: print_email_result(o))}
+
+
 def cmd_new(a):
     src = Path(a.items).expanduser()
     items = read_json(src)
@@ -963,8 +1439,9 @@ def build_result(sess):
 
 def cmd_status(a):
     sess = resolve(a.session)
-    if (read_json(sess / "items.json") or {}).get("mode") == "document":
-        out = document_result(sess)
+    mode = (read_json(sess / "items.json") or {}).get("mode")
+    if mode in RESULTS:
+        out = RESULTS[mode][0](sess)
         alive = server_alive(sess)
         print(f"{sess.name}: {out['status']} | {len(out['comments'])} comments, {out['untranscribed']} untranscribed | "
               f"round {out['rounds']} | server {'up ' + alive['url'] if alive else 'down'}")
@@ -980,11 +1457,15 @@ def cmd_status(a):
 
 def cmd_result(a):
     sess = resolve(a.session)
-    if (read_json(sess / "items.json") or {}).get("mode") == "document":
-        out = document_result(sess)
+    mode = (read_json(sess / "items.json") or {}).get("mode")
+    if mode in RESULTS:
+        out = RESULTS[mode][0](sess)
         if a.new:
-            out["comments"] = [r for r in out["comments"] if (r.get("outcome") or {}).get("state") in (None, "failed")]
-        print(json.dumps(out, indent=2, ensure_ascii=False)) if a.json else print_document_result(out)
+            keep = lambda r: (r.get("outcome") or {}).get("state") in (None, "failed")
+            out["comments"] = [r for r in out["comments"] if keep(r)]
+            for d in out.get("drafts", []):
+                d["comments"] = [r for r in d["comments"] if keep(r)]
+        print(json.dumps(out, indent=2, ensure_ascii=False)) if a.json else RESULTS[mode][1](out)
         return
     items, out = build_result(sess)
     if a.new:
@@ -1043,7 +1524,7 @@ def cmd_wait(a):
 def cmd_outcome(a):
     sess = resolve(a.session)
     items = read_json(sess / "items.json")
-    valid = {c["id"] for c in read_json(sess / "comments.json", [])} if items.get("mode") == "document" \
+    valid = {c["id"] for c in read_json(sess / "comments.json", [])} if items.get("mode") in RESULTS \
         else {it["id"] for _, it in all_items(items)}
     if a.id not in valid:
         die(f"unknown item id {a.id!r}")
@@ -1174,7 +1655,16 @@ def main():
                    help="feedback categories: designed (wording + typography, colour, layout...) or text (wording, structure, tone, facts)")
     x.add_argument("--categories", help="comma-separated categories instead of the preset")
     x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_document)
-    x = sp.add_parser("transcribe", help="transcribe a document session's voice comments (OpenAI-compatible ASR)")
+    x = sp.add_parser("text", help="plain text / Markdown -> a page you review by selecting words and talking")
+    x.add_argument("file"); x.add_argument("--title"); x.add_argument("--name"); x.add_argument("--instructions")
+    x.add_argument("--preset", choices=["text", "script"], help="script adds Delivery / Timing / Pacing and read-aloud times")
+    x.add_argument("--categories"); x.add_argument("--markdown", action="store_true", help="parse as Markdown whatever the extension")
+    x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_text)
+    x = sp.add_parser("email", help="email draft(s) JSON -> a page with Fine / Change per field, verdict per draft")
+    x.add_argument("file"); x.add_argument("--title"); x.add_argument("--name"); x.add_argument("--instructions")
+    x.add_argument("--categories"); x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0)
+    x.set_defaults(f=cmd_email)
+    x = sp.add_parser("transcribe", help="transcribe a session's voice comments (OpenAI-compatible ASR)")
     x.add_argument("session", nargs="?"); x.add_argument("--all", action="store_true", help="redo existing transcripts")
     x.add_argument("--list", action="store_true", help="print audio files still to transcribe, as JSON"); x.set_defaults(f=cmd_transcribe)
     x = sp.add_parser("set-transcript", help="store a transcript made elsewhere")
