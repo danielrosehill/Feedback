@@ -15,7 +15,7 @@
   FB.status = t => { const e = $("#status"); if (e) e.textContent = t; };
 
   FB.load = async function () {
-    const r = await (await fetch("/api/session")).json();
+    const r = await (await fetch("api/session")).json();
     Object.assign(FB, { items: r.items, comments: r.comments || [], outcomes: r.outcomes || {}, intents: r.intents || [],
       fieldIntents: r.field_intents || [], verdicts: r.verdicts || [], response: r.response || {} });
     document.title = "Feedback – " + (FB.items.title || "");
@@ -56,7 +56,7 @@
         const c = FB.comments.find(x => x.id === id);
         if (!discard && c && chunks.length && Date.now() - t0 > 600) {
           FB.status("uploading…");
-          const r = await fetch(`/api/audio?id=${id}&ext=webm`, { method: "POST", body: new Blob(chunks, { type: mr.mimeType || "audio/webm" }) });
+          const r = await fetch(`api/audio?id=${id}&ext=webm`, { method: "POST", body: new Blob(chunks, { type: mr.mimeType || "audio/webm" }) });
           if (r.ok) { c.audio = (await r.json()).audio; c.duration_s = Math.round((Date.now() - t0) / 100) / 10; c._v = Date.now(); delete c.transcript; }
         }
         FB.render(); await FB.save(); resolve();
@@ -69,7 +69,7 @@
     clearTimeout(FB.saveT);
     const go = async () => {
       const body = Object.assign({ comments: FB.comments.map(({ _n, _v, ...c }) => c), submit: !!submit }, FB.extra());
-      const r = await fetch("/api/comments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await fetch("api/comments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const j = await r.json(); FB.status(j.status === "submitted" ? "submitted ✓" : "saved " + new Date().toLocaleTimeString());
     };
     if (submit) return go();
@@ -90,7 +90,7 @@
       <div class="chips">${cats}</div>${ints ? `<div class="chips">${ints}</div>` : ""}
       <div class="row">${rec ? `<button class="rec small" data-stop>■ Stop</button><span class="timer" id="timer">0:00</span>`
         : `<button class="small" data-rec>${c.audio ? "🎙 Re-record" : "🎙 Record"}</button>${c.duration_s ? `<span class="dur">${fmt(c.duration_s)}</span>` : ""}`}</div>
-      ${c.audio && !rec ? `<audio controls preload="none" src="/audio/${c.audio}?t=${c._v || 0}"></audio>` : ""}
+      ${c.audio && !rec ? `<audio controls preload="none" src="audio/${c.audio}?t=${c._v || 0}"></audio>` : ""}
       ${c.transcript ? `<div class="transcript" dir="auto">${esc(c.transcript)}</div>` : ""}
       <textarea dir="auto" placeholder="…or type a note">${esc(c.note || "")}</textarea>
       ${FB.outcomes[c.id] ? `<div class="outcome">${esc(FB.outcomes[c.id].state + (FB.outcomes[c.id].text ? ": " + FB.outcomes[c.id].text : ""))}</div>` : ""}`;
@@ -121,7 +121,7 @@
   setInterval(async () => {  // transcripts and outcomes written while the page is open
     if (FB.recState || !FB.items) return;
     try {
-      const r = await (await fetch("/api/session")).json(); FB.outcomes = r.outcomes || {}; let changed = false;
+      const r = await (await fetch("api/session")).json(); FB.outcomes = r.outcomes || {}; let changed = false;
       for (const c of r.comments || []) { const m = FB.comments.find(x => x.id === c.id); if (m && c.transcript && m.transcript !== c.transcript && m.audio === c.audio) { m.transcript = c.transcript; changed = true; } }
       if (changed && !document.activeElement?.matches("textarea")) FB.render();
     } catch (e) {}

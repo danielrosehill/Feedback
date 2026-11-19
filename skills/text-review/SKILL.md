@@ -38,4 +38,5 @@ feedback result            # or --json: anchor {start, end, lines, quote, prefix
 
 Edit the source file (keep the previous version if it was shared), then
 `feedback outcome <session> <id> done|skipped|failed "what you did"` per comment, and open the
-next version with `feedback text` for the next round.
+next version with `feedback text` for the next round; `feedback done <old session>` closes the
+previous one (skill `feedback-panel` › Where forms live).

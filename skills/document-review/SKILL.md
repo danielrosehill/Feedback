@@ -62,12 +62,13 @@ feedback result --json         # same, as records
 feedback outcome <session> <id> done "rewrote §A as prose"     # or skipped / failed, with why
 ```
 
-Then open the new version as a fresh session (`feedback document new.pdf --title "... v4"`) and say
-in one line what changed. A round is done when the user submits with no new comments, or says so.
+Then open the new version as a fresh session (`feedback document new.pdf --title "... v4"`), close
+the previous one (`feedback done <old session>`), and say in one line what changed. A round is done when the user submits with no new comments, or says so.
 
 ## Notes
 
 - Anchor text is cut from the PDF with `pdftotext` per line and paragraph, so Hebrew and Arabic come
   out in reading order. Pins in margins or on images have no anchor text; use the page number.
 - Audio is kept in the session folder (`audio/<id>.webm`) next to the transcript.
-- Sessions live in `~/.local/share/feedback-panel/sessions/` (old name kept for compatibility).
+- Forms are served by the one shared server and live in the forms repo's `review/`, then `done/`
+  (skill `feedback-panel` › Where forms live). Close each round's form once the next is open.

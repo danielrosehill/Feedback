@@ -187,7 +187,7 @@ function el(id) { const it = IT[id]; return it && DIAG[it.it.diagram] && DIAG[it
 function choiceLabel(id) { const s = ANS[id]; if (!s || !s.choice) return ""; const c = choicesOf(id).find(c => c.id === s.choice); return c ? c.label : s.choice; }
 
 async function load() {
-  const d = await (await fetch("/api/session")).json();
+  const d = await (await fetch("api/session")).json();
   F = d.items; OUTCOMES = d.outcomes || {};
   if (!F.input || F.input === "check") { F.input = "choice"; F.choices = F.choices || [{ id: "marked", label: F.mark_label || "Flag", tone: "danger" }]; }
   const resp = d.response || {};
@@ -445,7 +445,7 @@ async function save(submit) {
   const items = {};
   for (const [k, v] of Object.entries(ANS)) if (v.choice || (v.note || "").trim()) items[k] = v;
   try {
-    const r = await fetch("/api/response", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/response", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items, general_note: $("#general").value, submit }) });
     const d = await r.json(); if (!d.ok) throw new Error(d.error);
     STATUS = d.status; $("#save").textContent = "saved " + new Date().toLocaleTimeString(); banner();
@@ -459,7 +459,7 @@ function banner() {
 }
 async function pollOutcomes() {
   try {
-    const oc = await (await fetch("/api/outcomes")).json();
+    const oc = await (await fetch("api/outcomes")).json();
     if (JSON.stringify(oc) !== JSON.stringify(OUTCOMES)) { OUTCOMES = oc; placeBadges(CUR); renderList(); if (SEL) select(SEL); banner(); }
   } catch (e) {}
 }

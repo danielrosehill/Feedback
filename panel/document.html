@@ -137,7 +137,7 @@ function spanRects(pageN, a, b) {
 }
 
 async function load() {
-  const r = await (await fetch("/api/session")).json();
+  const r = await (await fetch("api/session")).json();
   ITEMS = r.items; LAYOUT = r.layout || []; INTENTS = r.intents || []; VERDICTS = r.verdicts || [];
   comments = r.comments || []; outcomes = r.outcomes || {};
   verdict = (r.response || {}).verdict || null; gnote = (r.response || {}).general_note || "";
@@ -205,7 +205,7 @@ async function addComment(c) {
   startRec(c.id);
 }
 async function fetchAnchor(id) {
-  try { const a = await (await fetch("/api/anchor?id=" + id)).json(); anchors[id] = a.quote || a.line || ""; render(); } catch (e) {}
+  try { const a = await (await fetch("api/anchor?id=" + id)).json(); anchors[id] = a.quote || a.line || ""; render(); } catch (e) {}
 }
 
 function render() {
@@ -240,7 +240,7 @@ function render() {
       <div class="chips">${cats}</div>${ints ? `<div class="chips">${ints}</div>` : ""}
       <div class="row">${rec ? `<button class="rec small" data-stop>■ Stop</button><span class="timer" id="timer">0:00</span>`
         : `<button class="small" data-rec>${c.audio ? "🎙 Re-record" : "🎙 Record"}</button>${c.duration_s ? `<span style="font-size:12px;color:var(--muted)">${fmt(c.duration_s)}</span>` : ""}`}</div>
-      ${c.audio && !rec ? `<audio controls preload="none" src="/audio/${c.audio}?t=${c._v || 0}"></audio>` : ""}
+      ${c.audio && !rec ? `<audio controls preload="none" src="audio/${c.audio}?t=${c._v || 0}"></audio>` : ""}
       ${c.transcript ? `<div class="transcript">${esc(c.transcript)}</div>` : ""}
       <textarea placeholder="…or type a note">${esc(c.note || "")}</textarea>
       ${outcomes[c.id] ? `<div class="outcome">${esc(outcomes[c.id].state + (outcomes[c.id].text ? ": " + outcomes[c.id].text : ""))}</div>` : ""}`;
@@ -277,7 +277,7 @@ function stopRec(discard) {
       if (!discard && c && chunks.length && Date.now() - t0 > 600) {
         setStatus("uploading…");
         const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
-        const r = await fetch(`/api/audio?id=${id}&ext=webm`, { method: "POST", body: blob });
+        const r = await fetch(`api/audio?id=${id}&ext=webm`, { method: "POST", body: blob });
         if (r.ok) { c.audio = (await r.json()).audio; c.duration_s = Math.round((Date.now() - t0) / 100) / 10; c._v = Date.now(); delete c.transcript; }
       }
       render(); await save(); resolve();
@@ -289,7 +289,7 @@ async function save(submit) {
   clearTimeout(saveT);
   const go = async () => {
     const body = { comments: comments.map(({ _n, _v, ...c }) => c), submit: !!submit, verdict, general_note: gnote };
-    const r = await fetch("/api/comments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch("api/comments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json(); setStatus(j.status === "submitted" ? "submitted ✓" : "saved " + new Date().toLocaleTimeString());
   };
   if (submit) return go();
@@ -309,7 +309,7 @@ document.addEventListener("keydown", async e => {
 setInterval(async () => {  // pick up transcripts and outcomes written while the page is open
   if (recState || drag) return;
   try {
-    const r = await (await fetch("/api/session")).json(); outcomes = r.outcomes || {}; let changed = false;
+    const r = await (await fetch("api/session")).json(); outcomes = r.outcomes || {}; let changed = false;
     for (const c of r.comments || []) { const m = comments.find(x => x.id === c.id); if (m && c.transcript && m.transcript !== c.transcript && m.audio === c.audio) { m.transcript = c.transcript; changed = true; } }
     if (changed && !document.activeElement?.matches("textarea")) render();
   } catch (e) {}

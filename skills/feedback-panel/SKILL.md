@@ -6,16 +6,34 @@ description: Put a long list of items in front of the user as a local web form (
 # Feedback panel
 
 A local page the user works through and a JSON file Claude reads. Nothing leaves the machine: the
-server binds 127.0.0.1 and accepts writes only from its own page.
+server binds 127.0.0.1 and accepts writes only from its own pages.
 
 - CLI `feedback` (alias `feedback-panel`), stdlib Python, on PATH via `~/.local/bin`; source
   `<plugin root>/bin/feedback`. If it's missing: `ln -sf <plugin root>/bin/feedback ~/.local/bin/`.
-- Templates and the library: a sibling repo `Feedback-Panel-Templates` next to the plugin, or
-  wherever `FEEDBACK_PANEL_TEMPLATES` points.
+- Templates, the library and the forms themselves: the forms repo (below).
 - For feedback on a document (PDF), use skill `document-review` instead; principles in `FRAMEWORK.md`.
 - Item format: `SCHEMA.md` at the plugin root.
 - If either repo is missing, `gh repo clone` it to that path, then
-  `ln -sf <Feedback-Panel>/bin/feedback-panel ~/.local/bin/`.
+  `ln -sf <Feedback>/bin/feedback ~/.local/bin/`.
+
+## Where forms live: one server, one port, review → done
+
+Every form (lists, diagrams, documents, text, email) is served by **one shared local server on a
+fixed port** (default 8790; `"port"` in `$FEEDBACK_PANEL_HOME/config.json` or `FEEDBACK_PORT`).
+Never start a server per form and never pick a port: `feedback new|text|document|email` start the
+shared server if needed (and replace it when the plugin code changed) and print the form's URL,
+`http://127.0.0.1:8790/f/<session>/`. `http://127.0.0.1:8790/` lists every open form.
+
+Forms live in the forms repo (`../Feedback-Forms` next to the plugin, or `FEEDBACK_FORMS` /
+`"forms_repo"` in config.json), which also holds `templates/` and `library/`:
+
+- `review/<session>/`: open forms, waiting for the user (gitignored).
+- `done/<session>/`: closed forms, committed as a record.
+
+Close a form with `feedback done <session>` as soon as it's acted on: the last outcome is written,
+the user has moved on, or you open the next version of the same thing (document v4 → close v3).
+Then commit `done/<session>` in the forms repo and push. `feedback reopen <session>` brings one
+back. A done form stays viewable at its URL. Leave nothing in `review/` that isn't waiting for the user.
 
 ## 0. Pick the form first
 
@@ -70,7 +88,8 @@ fresh `diagram` + `new` for the next round.
 feedback-panel new items.json --template <name> [--suggest suggestions.json] [--name slug]
 ```
 
-This starts a background server, opens the page and prints the session directory and URL. Tell
+This puts the form in `review/`, makes sure the shared server is up, opens the page and prints the
+session directory and URL. Tell
 The user in one line what's in it, how many items there are, and to press **Submit**. Then wait for
 them, or run `feedback-panel wait <session>` in the background (it exits on Submit) if you have
 other work to do meanwhile.
@@ -116,9 +135,14 @@ If this form wasn't from the library and is likely to come back (a periodic revi
 triage), ask in one line: "Keep this form in the library as `<name>`?" On a yes, follow
 `feedback-form-library` › Save. Don't ask for one-off lists.
 
+Then close it: `feedback done <session>`, commit `done/<session>` in the forms repo, push.
+
 ## Other commands
 
-- `feedback-panel status|open|stop [session]`: check a session, reopen its page, stop its server.
-- `feedback-panel list`: all sessions.
-- `<session>` defaults to the newest; a unique substring of its name also works.
-- Sessions live in `~/.local/share/feedback-panel/sessions/`. Stop the server when the review is over.
+- `feedback status|open [session]`: check a form, reopen its page.
+- `feedback done <session>...` / `feedback reopen <session>`: move between `review/` and `done/`.
+- `feedback list [--all]`: open forms (`--all` adds done ones).
+- `feedback server status|start|stop|restart`: the shared server. Leave it running; it's one process.
+- `feedback migrate`: move sessions from the old `~/.local/share/feedback-panel/sessions/` into
+  `done/` (skips any whose old per-form server is still running).
+- `<session>` defaults to the newest; a unique substring of its name also works (open forms win).

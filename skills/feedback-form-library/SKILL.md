@@ -5,9 +5,9 @@ description: the user's library of saved feedback forms - forms that worked well
 
 # Feedback form library
 
-The library is `library/<category>/<name>/` (e.g. `library/system-maintenance/software-review`; `z formlib` goes there) in
-`~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel-Templates`
-(repo `danielrosehill/Feedback-Panel-Templates`). Each entry holds:
+The library is `library/<category>/<name>/` (e.g. `library/system-maintenance/software-review`) in
+the forms repo: `../Feedback-Forms` next to the plugin, or `FEEDBACK_FORMS`. The same repo holds
+`templates/`, open forms (`review/`) and closed ones (`done/`). Each library entry holds:
 
 - `form.json`: answer options, wording with `{host}`/`{date}` placeholders, and an optional
   `generator` command.

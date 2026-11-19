@@ -2,36 +2,46 @@
 """feedback-panel: put a long list of items in front of the user as a local web form, autosave
 their answers to a JSON file, and let Claude read the result back.
 
-Stdlib only. One session = one directory under $FEEDBACK_PANEL_HOME (default
-~/.local/share/feedback-panel/sessions/<YYYY-MM-DD-HHMMSS>-<slug>/) holding:
+Stdlib only. One shared server on a fixed port (default 8790; "port" in
+$FEEDBACK_PANEL_HOME/config.json or FEEDBACK_PORT) serves every form at
+http://127.0.0.1:<port>/f/<session>/, with a list of open forms at /. It starts on demand and
+replaces itself when this file changes. Forms live in the forms repo (FEEDBACK_FORMS, "forms_repo"
+in config.json, or ../Feedback-Forms next to this plugin):
+
+  templates/<name>/   library/<cat>/<name>/   generic answer sets and kept forms
+  review/<session>/   open forms, waiting for the user
+  done/<session>/     closed forms (`feedback done`), kept as a record
+
+One session = one directory <YYYY-MM-DD-HHMMSS>-<slug>/ holding:
 
   items.json     the form: items + answer options (see SCHEMA.md)
   page.html      only when the form's template ships its own page
   response.json  what the user answered (autosaved on every change)
   outcomes.json  what Claude did about each item afterwards (shown back in the page)
-  server.json    pid / port / url of the running server
+  server.json    legacy per-session server only (--port N)
 
 Forms answer in one of three ways (`input`):
   choice  every item gets one of the form's `choices` (e.g. Remove / Keep for now / Ask me)
   check   a single tick box per item (`mark_label` says what a tick means)
   text    every item is a question with a free-text answer
 
-Templates and saved forms live in a separate repo ($FEEDBACK_PANEL_TEMPLATES, default
-../Feedback-Panel-Templates next to this plugin): templates/<name>/form.json (generic) and
-library/<name>/form.json + recipe.md (forms worth keeping, with how to regenerate their items).
 
 Commands:
-  new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open] [--port N]
+  new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open]
   diagram <file.dot>... [-o items.json] [--font-dir D] [--label NAME]... [--title T]
                                               Graphviz diagram(s) -> items for a clickable review:
                                               every node, connection and zone is an item
-  serve <session> [--port N]                  run the server in the foreground
+  (--port N on new/document/text/email: legacy, the form gets its own server on N)
   status [session]                            one-line state
   result [session] [--json] [--new]                 answers grouped by choice, notes, free text
   wait [session] [--timeout S] [--next]              block until the user presses Submit
   outcome <session> <id> <done|skipped|failed> [text]
-  open | stop [session]                       reopen the page / stop the server
-  list                                        sessions, newest first
+  open [session]                              open the form's page
+  done [session...]                           close form(s): review/ -> done/
+  reopen <session>                            done/ -> review/, and open it
+  list [--all]                                open forms (--all: done ones too), newest first
+  server [start|stop|restart|status]          the shared form server
+  migrate [--review] [--include-live]         move old ~/.local/share sessions into the forms repo
   templates                                   list templates and saved library forms
   template <name>                             print a template's form.json and recipe.md
   save <session> <name> [--generator CMD] [--description TEXT] [--force]
@@ -78,8 +88,30 @@ EMAIL_SCOPES = ("field", "span", "email")
 EMAIL_FIELDS = ("from", "to", "cc", "bcc", "subject", "attachments", "body")
 WPM = 150  # read-aloud estimate for scripts
 SCOPES = ("point", "page", "document", "text", "area")
-HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
-TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
+DATA = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel"))
+try:
+    CONFIG = json.loads((DATA / "config.json").read_text())
+except (FileNotFoundError, json.JSONDecodeError):
+    CONFIG = {}
+LEGACY = DATA / "sessions"  # sessions before the shared server (read-only use: result, outcome, migrate)
+
+
+def _forms_repo():
+    for c in (os.environ.get("FEEDBACK_FORMS"), CONFIG.get("forms_repo"), os.environ.get("FEEDBACK_PANEL_TEMPLATES")):
+        if c:
+            return Path(c).expanduser()
+    for name in ("Feedback-Forms", "Feedback-Panel-Templates"):
+        if (ROOT.parent / name).exists():
+            return ROOT.parent / name
+    return DATA  # no forms repo: review/ and done/ live in the data dir
+
+
+# The forms repo holds everything: templates/, library/, review/ (open forms) and done/ (closed ones).
+TEMPLATES = FORMS = _forms_repo()
+REVIEW, DONE = FORMS / "review", FORMS / "done"
+FORMS_DATA = DATA
+HOME = REVIEW  # new sessions are created here
+PORT = int(os.environ.get("FEEDBACK_PORT") or CONFIG.get("port") or 8790)
 FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "mark_tone", "suggest_choice", "submit_hint",
              "note_open", "note_placeholder")
 LOCK = threading.Lock()
@@ -110,10 +142,21 @@ def write_json(p, data):
 
 # ---------------------------------------------------------------- sessions
 
-def sessions():
-    if not HOME.exists():
-        return []
-    return sorted((d for d in HOME.iterdir() if (d / "items.json").exists()), key=lambda d: d.name, reverse=True)
+def sessions(where=("review", "done", "legacy")):
+    dirs = {"review": REVIEW, "done": DONE, "legacy": LEGACY}
+    out = [d for w in where if dirs[w].exists() for d in dirs[w].iterdir() if (d / "items.json").exists()]
+    return sorted(out, key=lambda d: d.name, reverse=True)
+
+
+def state_of(d):
+    return "review" if d.parent == REVIEW else "done" if d.parent == DONE else "legacy"
+
+
+def find_session(name):
+    for base in (REVIEW, DONE, LEGACY):
+        if (base / name / "items.json").exists():
+            return base / name
+    return None
 
 
 def resolve(ref):
@@ -125,13 +168,13 @@ def resolve(ref):
     p = Path(ref).expanduser()
     if (p / "items.json").exists():
         return p.resolve()
-    if (HOME / ref / "items.json").exists():
-        return HOME / ref
+    if find_session(ref):
+        return find_session(ref)
     matches = [d for d in sessions() if ref in d.name]
     if len(matches) == 1:
         return matches[0]
-    if len(matches) > 1:  # newest wins for a repeated form name
-        return matches[0]
+    if len(matches) > 1:  # open forms first, then newest, for a repeated form name
+        return next((d for d in matches if state_of(d) == "review"), matches[0])
     die(f"no session matches {ref!r}")
 
 
@@ -258,6 +301,94 @@ def free_port(preferred=0):
     return port
 
 
+def code_stamp():
+    """Changes when the CLI changes, so a running shared server from older code gets replaced."""
+    return int(Path(__file__).resolve().stat().st_mtime)
+
+
+LOADED_CODE = code_stamp()  # the code this process is running
+
+
+def ping(timeout=1.0):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/ping", timeout=timeout) as r:
+            d = json.loads(r.read())
+            return d if d.get("feedback") else {}
+    except Exception:
+        try:  # something answers on the port but it isn't us
+            with socket.create_connection(("127.0.0.1", PORT), timeout=timeout):
+                return {}
+        except OSError:
+            return None
+
+
+def kill_server(info):
+    try:
+        os.kill(info["pid"], signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(50):  # until the port is really free
+        if ping(0.3) is None:
+            return
+        time.sleep(0.1)
+
+
+def ensure_server():
+    """One shared form server on PORT for every form. Start it, or replace it if its code is stale."""
+    info = ping()
+    for _ in range(10):  # a server we just stopped can still hold the port for a moment
+        if info != {}:
+            break
+        time.sleep(0.2)
+        info = ping()
+    if info == {}:
+        die(f"port {PORT} is taken by another program; set \"port\" in {DATA / 'config.json'} or FEEDBACK_PORT")
+    if info and info.get("code") == code_stamp() and info.get("forms") == str(FORMS):
+        return info
+    if info:
+        kill_server(info)
+    DATA.mkdir(parents=True, exist_ok=True)
+    log = open(DATA / "server.log", "a")
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "server", "run"],
+                     stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(50):
+        time.sleep(0.1)
+        info = ping(0.3)
+        if info:
+            return info
+    die(f"shared server did not start; see {DATA / 'server.log'}")
+
+
+def form_url(sess):
+    return f"http://127.0.0.1:{PORT}/f/{sess.name}/"
+
+
+def present(sess, port=0):
+    """Serve a session: through the shared server, or (legacy --port N) its own server."""
+    if port:
+        return start_background(sess, port)
+    ensure_server()
+    return {"url": form_url(sess)}
+
+
+def dashboard_html():
+    from html import escape
+    def rows(ds):
+        out = []
+        for d in ds:
+            it = read_json(d / "items.json") or {}
+            st = (read_json(d / "response.json") or {}).get("status", "untouched")
+            out.append(f'<li><a href="/f/{escape(d.name)}/">{escape(it.get("title") or d.name)}</a> '
+                       f'<span>{escape(it.get("mode") or it.get("input") or "")} · {escape(st)} · {escape(d.name[:10])}</span></li>')
+        return "\n".join(out) or "<li><span>none</span></li>"
+    return f"""<!doctype html><meta charset="utf-8"><title>Forms</title>
+<style>body{{font:15px system-ui,sans-serif;max-width:760px;margin:2em auto;padding:0 1em}}li{{margin:.4em 0}}
+span{{color:#777;font-size:13px;margin-left:.5em}}h2{{margin-top:1.6em}}</style>
+<h1>Forms</h1><h2>For review</h2><ul>{rows(sessions(("review",)))}</ul>
+<h2>Done (latest 30)</h2><ul>{rows(sessions(("done",))[:30])}</ul>"""
+
+
 def open_browser(url):
     for cmd in (["xdg-open", url], ["open", url]):
         if shutil.which(cmd[0]):
@@ -266,10 +397,37 @@ def open_browser(url):
     return False
 
 
-def make_handler(sess):
+def make_handler(fixed=None):
+    """fixed=None: the shared form server; every form is served under /f/<session>/.
+    fixed=<dir>: legacy one-session server at /."""
     class H(http.server.BaseHTTPRequestHandler):
+        sess = fixed
+
+        def route(self):
+            """Shared server: pick the session from /f/<name>/ and strip the prefix. False = handled."""
+            if fixed is not None:
+                return True
+            path, _, query = self.path.partition("?")
+            if path == "/api/ping":
+                self.send(200, {"feedback": True, "pid": os.getpid(), "code": LOADED_CODE, "forms": str(FORMS)})
+                return False
+            if path in ("/", "/index.html"):
+                self.send(200, dashboard_html(), "text/html")
+                return False
+            m = re.match(r"^/f/([A-Za-z0-9._-]+)(/.*)?$", path)
+            d = find_session(m.group(1)) if m else None
+            if not d:
+                self.send(404, {"error": "no such form (moved to done, or deleted?)"})
+                return False
+            if not m.group(2):  # pages use relative URLs, so the base needs its trailing slash
+                self.send_response(301); self.send_header("Location", f"/f/{m.group(1)}/"); self.end_headers()
+                return False
+            self.sess = d
+            self.path = m.group(2) + ("?" + query if query else "")
+            return True
+
         def log_message(self, fmt, *a):
-            with open(sess / "server.log", "a") as f:
+            with open((self.sess or FORMS_DATA) / "server.log", "a") as f:
                 f.write(f"{now()} {fmt % a}\n")
 
         def send(self, code, body, ctype="application/json"):
@@ -285,60 +443,66 @@ def make_handler(sess):
             self.wfile.write(body)
 
         def do_GET(self):
+            if not self.route():
+                return
             path = self.path.split("?")[0]
             if path in ("/", "/index.html"):
-                page = sess / "page.html" if (sess / "page.html").exists() else PANEL_HTML
+                page = self.sess / "page.html" if (self.sess / "page.html").exists() else PANEL_HTML
                 return self.send(200, page.read_bytes(), "text/html")
             if path == "/api/session":
-                items = read_json(sess / "items.json")
+                items = read_json(self.sess / "items.json")
                 items.pop("_template_form", None)
                 if items.get("mode") == "document":
                     lay = []
-                    for pg in read_json(sess / "layout.json", []):
+                    for pg in read_json(self.sess / "layout.json", []):
                         W, H = pg["w"], pg["h"]
                         nb = lambda r: [round(r[0] / W, 5), round(r[1] / H, 5), round(r[2] / W, 5), round(r[3] / H, 5)]
                         lay.append([{"words": [nb(w) for w in l["words"]], "rtl": l["rtl"]}
                                     for b in pg["blocks"] for l in b["lines"] if isinstance(l, dict)])
-                    return self.send(200, {"items": items, "layout": lay, "comments": read_json(sess / "comments.json", []),
+                    for pg in items.get("pages", []):
+                        pg["img"] = pg["img"].lstrip("/")
+                    return self.send(200, {"items": items, "layout": lay, "comments": read_json(self.sess / "comments.json", []),
                                            "intents": WORDING_INTENTS, "verdicts": VERDICTS,
-                                           "response": read_json(sess / "response.json", {}),
-                                           "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
+                                           "response": read_json(self.sess / "response.json", {}),
+                                           "outcomes": read_json(self.sess / "outcomes.json", {}), "session": self.sess.name})
                 if items.get("mode") in ("text", "email"):
-                    return self.send(200, {"items": items, "comments": read_json(sess / "comments.json", []),
+                    return self.send(200, {"items": items, "comments": read_json(self.sess / "comments.json", []),
                                            "intents": WORDING_INTENTS, "field_intents": FIELD_INTENTS, "verdicts": VERDICTS,
-                                           "response": read_json(sess / "response.json", {}),
-                                           "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
-                return self.send(200, {"items": items, "response": read_json(sess / "response.json", {}),
-                                       "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
+                                           "response": read_json(self.sess / "response.json", {}),
+                                           "outcomes": read_json(self.sess / "outcomes.json", {}), "session": self.sess.name})
+                return self.send(200, {"items": items, "response": read_json(self.sess / "response.json", {}),
+                                       "outcomes": read_json(self.sess / "outcomes.json", {}), "session": self.sess.name})
             if path == "/api/outcomes":
-                return self.send(200, read_json(sess / "outcomes.json", {}))
+                return self.send(200, read_json(self.sess / "outcomes.json", {}))
             if path == "/api/anchor":  # the text a document comment points at, for the page to show
                 cid = dict(kv.split("=", 1) for kv in self.path.partition("?")[2].split("&") if "=" in kv).get("id", "")
-                c = next((c for c in read_json(sess / "comments.json", []) if c["id"] == cid), None)
-                return self.send(200, anchor_text(sess, c) if c else {})
+                c = next((c for c in read_json(self.sess / "comments.json", []) if c["id"] == cid), None)
+                return self.send(200, anchor_text(self.sess, c) if c else {})
             m = re.match(r"^/static/([a-z0-9-]+\.(js|css))$", path)
             if m and (ROOT / "panel" / m.group(1)).exists():
                 return self.send(200, (ROOT / "panel" / m.group(1)).read_bytes(),
                                  "text/javascript" if m.group(2) == "js" else "text/css")
             m = re.match(r"^/files/(\d+)/(\d+)$", path)  # email attachment: draft / index
             if m:
-                items = read_json(sess / "items.json") or {}
+                items = read_json(self.sess / "items.json") or {}
                 try:
                     att = items["drafts"][int(m.group(1))]["attachments"][int(m.group(2))]
                 except (KeyError, IndexError):
                     return self.send(404, {"error": "not found"})
-                f = sess / "files" / att["file"]
+                f = self.sess / "files" / att["file"]
                 import mimetypes
                 return self.send(200, f.read_bytes(), mimetypes.guess_type(att["name"])[0] or "application/octet-stream")
             m = re.match(r"^/pages/(\d+)\.png$", path)
-            if m and (sess / "pages" / f"{m.group(1)}.png").exists():
-                return self.send(200, (sess / "pages" / f"{m.group(1)}.png").read_bytes(), "image/png")
+            if m and (self.sess / "pages" / f"{m.group(1)}.png").exists():
+                return self.send(200, (self.sess / "pages" / f"{m.group(1)}.png").read_bytes(), "image/png")
             m = re.match(r"^/audio/([A-Za-z0-9_-]+)\.(\w+)$", path)
-            if m and m.group(2) in AUDIO_EXT and (sess / "audio" / f"{m.group(1)}.{m.group(2)}").exists():
-                return self.send(200, (sess / "audio" / f"{m.group(1)}.{m.group(2)}").read_bytes(), f"audio/{m.group(2)}")
+            if m and m.group(2) in AUDIO_EXT and (self.sess / "audio" / f"{m.group(1)}.{m.group(2)}").exists():
+                return self.send(200, (self.sess / "audio" / f"{m.group(1)}.{m.group(2)}").read_bytes(), f"audio/{m.group(2)}")
             self.send(404, {"error": "not found"})
 
         def do_POST(self):
+            if not self.route():
+                return
             path, _, query = self.path.partition("?")
             # Only the page itself may write; blocks drive-by posts from other sites.
             origin = self.headers.get("Origin")
@@ -356,8 +520,8 @@ def make_handler(sess):
             except json.JSONDecodeError:
                 return self.send(400, {"error": "bad json"})
             with LOCK:
-                prev = read_json(sess / "response.json", {})
-                items = read_json(sess / "items.json")
+                prev = read_json(self.sess / "response.json", {})
+                items = read_json(self.sess / "items.json")
                 allowed = {it["id"]: {c["id"] for c in choices_for(items, g)} for g, it in all_items(items)}
                 entries = {}
                 for k, v in (data.get("items") or {}).items():
@@ -375,7 +539,7 @@ def make_handler(sess):
                         "items": entries, "updated": now(), "created": prev.get("created", now()),
                         "submitted_at": now() if submit else prev.get("submitted_at"),
                         "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
-                write_json(sess / "response.json", resp)
+                write_json(self.sess / "response.json", resp)
             self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"]})
 
         # ---- document review: voice comments pinned to a page
@@ -385,9 +549,9 @@ def make_handler(sess):
             n = int(self.headers.get("Content-Length", 0))
             if not CID_RE.match(cid) or ext not in AUDIO_EXT or not 0 < n <= MAX_AUDIO:
                 return self.send(400, {"error": "bad audio upload"})
-            (sess / "audio").mkdir(exist_ok=True)
+            (self.sess / "audio").mkdir(exist_ok=True)
             name = f"{cid}.{ext}"
-            (sess / "audio" / name).write_bytes(self.rfile.read(n))
+            (self.sess / "audio" / name).write_bytes(self.rfile.read(n))
             self.send(200, {"ok": True, "audio": name})
 
         def post_comments(self):
@@ -396,12 +560,12 @@ def make_handler(sess):
                 data = json.loads(self.rfile.read(n) or b"{}")
             except json.JSONDecodeError:
                 return self.send(400, {"error": "bad json"})
-            items = read_json(sess / "items.json")
+            items = read_json(self.sess / "items.json")
             if items.get("mode") in ("text", "email"):
                 return self.post_textual(items, data)
             npages = len(items.get("pages", []))
             with LOCK:
-                old = {c["id"]: c for c in read_json(sess / "comments.json", [])}
+                old = {c["id"]: c for c in read_json(self.sess / "comments.json", [])}
                 out = []
                 for c in data.get("comments") or []:
                     cid = str(c.get("id", ""))
@@ -425,7 +589,7 @@ def make_handler(sess):
                     if c.get("intent") in WORDING_INTENTS:
                         e["intent"] = c["intent"]
                     audio = str(c.get("audio") or "")
-                    if audio and (sess / "audio" / audio).exists() and audio.startswith(cid + "."):
+                    if audio and (self.sess / "audio" / audio).exists() and audio.startswith(cid + "."):
                         e["audio"] = audio
                         e["duration_s"] = c.get("duration_s") if isinstance(c.get("duration_s"), (int, float)) else None
                         prev = old.get(cid, {})
@@ -433,16 +597,16 @@ def make_handler(sess):
                             e["transcript"], e["transcript_by"] = prev["transcript"], prev.get("transcript_by")
                     if e.get("audio") or e["note"].strip() or e.get("intent") or e.get("category"):
                         out.append(e)
-                write_json(sess / "comments.json", out)
+                write_json(self.sess / "comments.json", out)
                 submit = bool(data.get("submit"))
-                prev = read_json(sess / "response.json", {})
+                prev = read_json(self.sess / "response.json", {})
                 resp = {"status": "submitted" if submit else "draft", "updated": now(),
                         "verdict": data.get("verdict") if data.get("verdict") in VERDICTS else prev.get("verdict"),
                         "general_note": str(data.get("general_note") or prev.get("general_note") or ""),
                         "created": prev.get("created", now()),
                         "submitted_at": now() if submit else prev.get("submitted_at"),
                         "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
-                write_json(sess / "response.json", resp)
+                write_json(self.sess / "response.json", resp)
             self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"], "comments": len(out)})
 
         def post_textual(self, items, data):
@@ -453,7 +617,7 @@ def make_handler(sess):
             intents = WORDING_INTENTS + (FIELD_INTENTS if mode == "email" else [])
             txt = lambda v, n=2000: str(v or "")[:n]
             with LOCK:
-                old = {c["id"]: c for c in read_json(sess / "comments.json", [])}
+                old = {c["id"]: c for c in read_json(self.sess / "comments.json", [])}
                 out = []
                 for c in data.get("comments") or []:
                     cid = str(c.get("id", ""))
@@ -483,7 +647,7 @@ def make_handler(sess):
                     if c.get("intent") in intents:
                         e["intent"] = c["intent"]
                     audio = str(c.get("audio") or "")
-                    if audio and (sess / "audio" / audio).exists() and audio.startswith(cid + "."):
+                    if audio and (self.sess / "audio" / audio).exists() and audio.startswith(cid + "."):
                         e["audio"] = audio
                         e["duration_s"] = c.get("duration_s") if isinstance(c.get("duration_s"), (int, float)) else None
                         prev = old.get(cid, {})
@@ -491,9 +655,9 @@ def make_handler(sess):
                             e["transcript"], e["transcript_by"] = prev["transcript"], prev.get("transcript_by")
                     if e.get("audio") or e["note"].strip() or e.get("intent") or e.get("category"):
                         out.append(e)
-                write_json(sess / "comments.json", out)
+                write_json(self.sess / "comments.json", out)
                 submit = bool(data.get("submit"))
-                prev = read_json(sess / "response.json", {})
+                prev = read_json(self.sess / "response.json", {})
                 resp = {"status": "submitted" if submit else "draft", "updated": now(),
                         "verdict": data.get("verdict") if data.get("verdict") in VERDICTS else prev.get("verdict"),
                         "general_note": txt(data.get("general_note") if "general_note" in data else prev.get("general_note"), 20000),
@@ -506,7 +670,7 @@ def make_handler(sess):
                     ps = data.get("picked_subject") if isinstance(data.get("picked_subject"), dict) else prev.get("picked_subject", {})
                     resp["picked_subject"] = {str(k): x for k, x in ps.items() if isinstance(x, int) and str(k).isdigit()
                                               and int(k) < ndrafts and 0 <= x < len(items["drafts"][int(k)]["subjects"])}
-                write_json(sess / "response.json", resp)
+                write_json(self.sess / "response.json", resp)
             self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"], "comments": len(out)})
 
     return H
@@ -819,12 +983,12 @@ def cmd_document(a):
              "instructions": a.instructions or "Pick a tool: Text (drag across words), Area (draw a box), Pin (click). "
              "Recording starts as soon as you've pointed; Stop or Esc ends it. Tag each comment's category. "
              "'Whole document' for overall points. Choose a verdict and Submit the round.",
-             "pages": [{"n": i, "img": f"/pages/{i}.png", "w": pg["w"], "h": pg["h"]} for i, pg in enumerate(layout, 1)],
+             "pages": [{"n": i, "img": f"pages/{i}.png", "w": pg["w"], "h": pg["h"]} for i, pg in enumerate(layout, 1)],
              "input": "document", "groups": []}
     write_json(sess / "items.json", items)
     write_json(sess / "comments.json", [])
     shutil.copy(DOCUMENT_HTML, sess / "page.html")
-    info = start_background(sess, a.port)
+    info = present(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
     print(json.dumps({"session": str(sess), "url": info["url"], "pages": len(layout), "mode": "document",
                       "browser_opened": bool(opened)}, indent=2))
@@ -1104,7 +1268,7 @@ def cmd_text(a):
     write_json(sess / "items.json", items)
     write_json(sess / "comments.json", [])
     shutil.copy(ROOT / "panel" / "text.html", sess / "page.html")
-    info = start_background(sess, a.port)
+    info = present(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
     print(json.dumps({"session": str(sess), "url": info["url"], "mode": "text", "blocks": len(blocks),
                       "sections": len(sections), "words": sum(s["words"] for s in sections),
@@ -1283,7 +1447,7 @@ def cmd_email(a):
     write_json(sess / "items.json", items)
     write_json(sess / "comments.json", [])
     shutil.copy(ROOT / "panel" / "email.html", sess / "page.html")
-    info = start_background(sess, a.port)
+    info = present(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
     print(json.dumps({"session": str(sess), "url": info["url"], "mode": "email", "drafts": len(drafts),
                       "browser_opened": bool(opened)}, indent=2))
@@ -1392,7 +1556,7 @@ def cmd_new(a):
     elif items.get("diagrams"):
         shutil.copy(DIAGRAM_HTML, sess / "page.html")
     write_json(sess / "items.json", items)
-    info = start_background(sess, a.port)
+    info = present(sess, a.port)
     opened = (not a.no_open) and open_browser(info["url"])
     print(json.dumps({"session": str(sess), "url": info["url"], "items": n, "groups": len(items["groups"]),
                       "input": items["input"], "choices": [c["label"] for c in items.get("choices", [])],
@@ -1444,7 +1608,7 @@ def cmd_status(a):
         out = RESULTS[mode][0](sess)
         alive = server_alive(sess)
         print(f"{sess.name}: {out['status']} | {len(out['comments'])} comments, {out['untranscribed']} untranscribed | "
-              f"round {out['rounds']} | server {'up ' + alive['url'] if alive else 'down'}")
+              f"round {out['rounds']} | {state_of(sess)} | " + (f"server {alive['url']}" if alive else form_url(sess)))
         return
     items, out = build_result(sess)
     alive = server_alive(sess)
@@ -1452,7 +1616,7 @@ def cmd_status(a):
         (f"{len(out['answers'])} answered" if out["input"] == "text" else "nothing chosen")
     resp = read_json(sess / "response.json", {})
     print(f"{sess.name}: {out['status']} | {counts} | {out['unanswered']}/{out['total']} unanswered | "
-          f"updated {resp.get('updated', '-')} | server {'up ' + alive['url'] if alive else 'down'}")
+          f"updated {resp.get('updated', '-')} | {state_of(sess)} | " + (f"server {alive['url']}" if alive else form_url(sess)))
 
 
 def cmd_result(a):
@@ -1537,31 +1701,107 @@ def cmd_outcome(a):
 
 def cmd_open(a):
     sess = resolve(a.session)
-    info = server_alive(sess) or start_background(sess)
+    info = server_alive(sess) or (present(sess) if state_of(sess) != "legacy" else start_background(sess))
     open_browser(info["url"])
     print(info["url"])
 
 
 def cmd_stop(a):
+    """Legacy per-session servers only; the shared server is `feedback server stop`."""
     sess = resolve(a.session)
     info = server_alive(sess)
     if not info:
-        print("not running")
+        print("no per-session server (forms use the shared server: `feedback done` closes a form)")
         return
     os.kill(info["pid"], signal.SIGTERM)
     print(f"stopped {info['url']}")
 
 
+def move_session(sess, dest_dir):
+    if sess.parent == dest_dir:
+        return sess
+    info = server_alive(sess)  # a legacy per-session server would point at the old path
+    if info:
+        os.kill(info["pid"], signal.SIGTERM)
+    for f in ("server.json",):
+        (sess / f).unlink(missing_ok=True)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / sess.name
+    if dest.exists():
+        die(f"{dest} already exists")
+    shutil.move(str(sess), str(dest))
+    return dest
+
+
+def cmd_done(a):
+    for ref in a.sessions or ["latest"]:
+        sess = resolve(ref)
+        if state_of(sess) == "done":
+            print(f"{sess.name}: already done")
+            continue
+        dest = move_session(sess, DONE)
+        print(f"{dest.name}: done -> {dest}")
+
+
+def cmd_reopen(a):
+    sess = resolve(a.session)
+    dest = move_session(sess, REVIEW)
+    ensure_server()
+    if not a.no_open:
+        open_browser(form_url(dest))
+    print(form_url(dest))
+
+
+def cmd_migrate(a):
+    """Move pre-shared-server sessions into the forms repo: done/, or review/ with --review."""
+    moved = 0
+    for d in sessions(("legacy",)):
+        if server_alive(d) and not a.include_live:
+            print(f"skip {d.name}: its old server is still running (pass --include-live to stop and move it)")
+            continue
+        move_session(d, REVIEW if a.review else DONE)
+        moved += 1
+    print(f"moved {moved} session(s) to {REVIEW if a.review else DONE}")
+
+
 def cmd_list(a):
-    for d in sessions():
+    where = ("review", "done", "legacy") if a.all else ("review", "legacy")
+    for d in sessions(where):
         resp = read_json(d / "response.json", {})
         tpl = (read_json(d / "items.json") or {}).get("_template", "")
-        print(f"{d.name:55} {resp.get('status', 'untouched'):10} {tpl:28} {'up' if server_alive(d) else ''}")
+        print(f"{state_of(d):7} {d.name:55} {resp.get('status', 'untouched'):10} {tpl:28} {'up' if server_alive(d) else ''}")
+
+
+def cmd_server(a):
+    if a.action == "run":
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), make_handler(None))
+        signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+        print(f"http://127.0.0.1:{PORT}/ serving {FORMS}", flush=True)
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        return
+    info = ping()
+    if a.action == "status":
+        print(json.dumps({"port": PORT, "url": f"http://127.0.0.1:{PORT}/", "running": bool(info), "forms_repo": str(FORMS),
+                          "review": len(sessions(("review",))), "done": len(sessions(("done",))),
+                          **({"pid": info["pid"], "stale_code": info.get("code") != code_stamp()} if info else {}),
+                          **({"conflict": "port taken by another program"} if info == {} else {})}, indent=2))
+    elif a.action == "stop":
+        if info:
+            kill_server(info)
+        print("stopped" if info else "not running")
+    else:  # start / restart
+        if a.action == "restart" and info:
+            kill_server(info)
+        ensure_server()
+        print(f"http://127.0.0.1:{PORT}/")
 
 
 def cmd_templates(a):
     if not TEMPLATES.exists():
-        die(f"templates repo not found at {TEMPLATES} (gh repo clone danielrosehill/Feedback-Panel-Templates {TEMPLATES})")
+        die(f"forms repo not found at {TEMPLATES} (clone your forms repo there, or set FEEDBACK_FORMS)")
     for kind in ("templates", "library"):
         fl = forms(kind)
         if not fl:
@@ -1676,7 +1916,15 @@ def main():
     x = sp.add_parser("result"); x.add_argument("session", nargs="?"); x.add_argument("--json", action="store_true"); x.add_argument("--new", action="store_true", help="only items with no outcome yet (or failed)"); x.set_defaults(f=cmd_result)
     x = sp.add_parser("wait"); x.add_argument("session", nargs="?"); x.add_argument("--timeout", type=int, default=0); x.add_argument("--next", action="store_true", help="wait for a Submit newer than the current round"); x.set_defaults(f=cmd_wait)
     x = sp.add_parser("outcome"); x.add_argument("session"); x.add_argument("id"); x.add_argument("state", choices=["done", "skipped", "failed"]); x.add_argument("text", nargs="*"); x.set_defaults(f=cmd_outcome)
-    x = sp.add_parser("list"); x.set_defaults(f=cmd_list)
+    x = sp.add_parser("list"); x.add_argument("--all", action="store_true", help="include done forms"); x.set_defaults(f=cmd_list)
+    x = sp.add_parser("done", help="close form(s): move from review/ to done/")
+    x.add_argument("sessions", nargs="*"); x.set_defaults(f=cmd_done)
+    x = sp.add_parser("reopen", help="move a done form back to review/ and open it")
+    x.add_argument("session"); x.add_argument("--no-open", action="store_true"); x.set_defaults(f=cmd_reopen)
+    x = sp.add_parser("migrate", help="move old ~/.local/share sessions into the forms repo")
+    x.add_argument("--review", action="store_true"); x.add_argument("--include-live", action="store_true"); x.set_defaults(f=cmd_migrate)
+    x = sp.add_parser("server", help="the shared form server: start | stop | restart | status | run")
+    x.add_argument("action", nargs="?", default="status", choices=["start", "stop", "restart", "status", "run"]); x.set_defaults(f=cmd_server)
     x = sp.add_parser("templates"); x.set_defaults(f=cmd_templates)
     x = sp.add_parser("template"); x.add_argument("name"); x.set_defaults(f=cmd_template)
     x = sp.add_parser("save"); x.add_argument("session"); x.add_argument("name"); x.add_argument("--generator")

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Email feedback</title>
-<link rel="stylesheet" href="/static/review-common.css">
+<link rel="stylesheet" href="static/review-common.css">
 <style>
   .tabs { display:flex; gap:6px; flex-wrap:wrap; padding:10px 18px 0; }
   .tab { border:1px solid var(--rule); background:#fff; border-radius:8px 8px 0 0; padding:6px 12px; cursor:pointer; font-size:14px; }
@@ -54,7 +54,7 @@
   </aside>
 </main>
 <div class="selpop" id="selpop"><button class="small" id="selrec">🎙 Comment on selection</button></div>
-<script src="/static/review-common.js"></script>
+<script src="static/review-common.js"></script>
 <script>
 const $ = s => document.querySelector(s), esc = FB.esc;
 let cur = 0, verdicts = {}, picked = {}, gnote = "", pending = null;
@@ -98,7 +98,7 @@ FB.render = function () {
       `<div class="alt${picked[cur] === i ? " on" : ""}" dir="${d.dir}" data-alt="${i}"><span data-sel="subject" data-alt-text="${i}">${esc(s)}</span><span class="pick">${picked[cur] === i ? "✓ picked" : "click to pick"}</span></div>`).join("")}</div>${ans("subject")}</div>`;
   } else h += `<div class="f subject"><span class="lab">Subject</span><div class="val" dir="${d.dir}" data-sel="subject">${esc(d.subjects[0])}</div>${ans("subject")}</div>`;
   if (d.attachments.length) h += `<div class="f"><span class="lab">Attachments</span><div class="val">${d.attachments.map((a, i) =>
-    `<div class="att">📎 <a href="/files/${cur}/${i}" target="_blank" rel="noopener">${esc(a.name)}</a> <span class="dur">${size(a.size)}</span></div>`).join("")}</div>${ans("attachments")}</div>`;
+    `<div class="att">📎 <a href="files/${cur}/${i}" target="_blank" rel="noopener">${esc(a.name)}</a> <span class="dur">${size(a.size)}</span></div>`).join("")}</div>${ans("attachments")}</div>`;
   h += `<div class="f body"><span class="lab">Body</span><div class="val bodyv${d.body_html ? "" : " plain"}" dir="${d.dir}" lang="${esc(d.lang)}" data-sel="body">${d.body_html || esc(d.body_text)}</div>${ans("body")}</div>`;
   $("#mail").innerHTML = h;
   $("#mail").querySelectorAll("[data-fine]").forEach(b => b.onclick = () => toggleFine(b.dataset.fine));

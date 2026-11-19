@@ -156,7 +156,7 @@ function isDone(id) { return (OUTCOMES[id] || {}).state === "done"; }
 function answered(id) { const s = st(id); return F.input === "text" ? !!(s.value || "").trim() : !!s.choice; }
 
 async function load() {
-  const d = await (await fetch("/api/session")).json();
+  const d = await (await fetch("api/session")).json();
   F = d.items; OUTCOMES = d.outcomes || {};
   if (!F.input) F.input = F.choices ? "choice" : "check";
   if (F.input === "check" && !F.choices) F.choices = [{ id: "marked", label: F.mark_label || "Ticked", tone: "danger" }];
@@ -328,7 +328,7 @@ async function save(submit) {
   const items = {};
   for (const [k, v] of Object.entries(ANS)) if (v.choice || (v.note || "").trim() || (v.value || "").trim()) items[k] = v;
   try {
-    const r = await fetch("/api/response", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/response", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items, general_note: $("#general").value, submit }) });
     const d = await r.json(); if (!d.ok) throw new Error(d.error);
     STATUS = d.status;
@@ -348,7 +348,7 @@ function banner() {
 
 async function pollOutcomes() {
   try {
-    const oc = await (await fetch("/api/outcomes")).json();
+    const oc = await (await fetch("api/outcomes")).json();
     if (JSON.stringify(oc) !== JSON.stringify(OUTCOMES)) { OUTCOMES = oc; render(); banner(); }
   } catch (e) {}
 }

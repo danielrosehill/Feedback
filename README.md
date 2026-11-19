@@ -19,7 +19,10 @@ The framework (what every mode must do, and why voice comes first) is in [`FRAME
 - Stdlib Python 3, no dependencies; `poppler-utils` (`pdftoppm`, `pdftotext`) for documents.
 - The server binds `127.0.0.1` and rejects cross-origin writes. Audio stays in the session folder
   until *you* choose where it is transcribed.
-- One session per review in `~/.local/share/feedback-panel/sessions/` (`FEEDBACK_PANEL_HOME`).
+- One shared server on one fixed port (default 8790) serves every form at
+  `http://127.0.0.1:8790/f/<session>/`; `/` lists the open ones. It starts on demand. Forms live in
+  a forms repo: `review/` while open, `done/` once closed (`feedback done`), next to `templates/`
+  and `library/`. No port per form, no stray servers.
   `feedback wait` blocks until Submit; `feedback result` gives the structured feedback;
   `feedback outcome` writes back what was done about each comment, and the open page shows it.
 
@@ -140,12 +143,14 @@ feedback new items.json --template architecture-review
 ```bash
 cd ~/repos/github/ai-agents-and-prompts/ai-claude-plugins
 gh repo clone danielrosehill/Feedback
-gh repo clone danielrosehill/Feedback-Panel-Templates     # optional: your form templates, found as ../Feedback-Panel-Templates
+mkdir Feedback-Forms                                       # your forms repo (templates/, library/, review/, done/), found as ../Feedback-Forms
 ln -sf "$PWD/Feedback/bin/feedback" ~/.local/bin/
 ln -sf "$PWD/Feedback/bin/feedback" ~/.local/bin/feedback-panel   # old name, still accepted
 ```
 
-Override locations with `FEEDBACK_PANEL_TEMPLATES` and `FEEDBACK_PANEL_HOME`. Format: `SCHEMA.md`.
+Settings in `~/.local/share/feedback-panel/config.json` (`FEEDBACK_PANEL_HOME`):
+`{"port": 8790, "forms_repo": "/path/to/Feedback-Forms"}`; or `FEEDBACK_PORT`, `FEEDBACK_FORMS`.
+Sessions from before the shared server: `feedback migrate`. Format: `SCHEMA.md`.
 
 ## Used by
 

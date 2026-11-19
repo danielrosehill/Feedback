@@ -6,10 +6,12 @@ first**; every mode follows it.
 
 - CLI `bin/feedback` (stdlib Python, one file). `bin/feedback-panel` is a compat symlink. Modes:
   `new` (list forms), `diagram` (Graphviz), `document` (PDF, voice comments). Pages in `panel/`.
-- Decisions in `planning/decisions/` (001-004). Item format: `SCHEMA.md`.
+- One shared server (`feedback server`, port 8790 default) serves every form at `/f/<session>/`;
+  pages must use relative URLs. Forms move `review/` → `done/` in the forms repo (decision 006).
+- Decisions in `planning/decisions/` (001-006). Item format: `SCHEMA.md`.
 - Generic only: no personal names, hosts, IPs or private repo names in code or skills. A user's
   own settings (ASR endpoint, templates repo) live outside the repo:
-  `$FEEDBACK_PANEL_HOME/config.json`, `FEEDBACK_PANEL_TEMPLATES`.
+  `$FEEDBACK_PANEL_HOME/config.json` (`port`, `forms_repo`, `asr`), `FEEDBACK_FORMS`, `FEEDBACK_PORT`.
 - Keep old names working (session dir `~/.local/share/feedback-panel`, `FEEDBACK_PANEL_*` env vars,
   the `feedback-panel` command): other plugins call them.
 - Bump `version` in `.claude-plugin/plugin.json` when behaviour or skills change.

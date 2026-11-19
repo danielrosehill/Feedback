@@ -5,7 +5,7 @@ description: Spin up a feedback form from a ready-made template instead of desig
 
 # Feedback form from a template
 
-Templates live in `~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel-Templates/templates/<name>/`:
+Templates live in the forms repo (`../Feedback-Forms` next to the plugin, or `FEEDBACK_FORMS`), `templates/<name>/`:
 
 - `form.json`: the answer options and default wording.
 - `example-items.json`: what the items look like.
@@ -42,7 +42,7 @@ When the user wants a new kind of form to stay available, or the same custom cho
 second time:
 
 ```bash
-T=~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel-Templates
+T=${FEEDBACK_FORMS:-<plugin root>/../Feedback-Forms}
 mkdir -p $T/templates/<name>      # lowercase-kebab, named after its answers
 ```
 
@@ -61,6 +61,6 @@ explicit paths and push. Templates are generic; a form tied to one task with a r
 building its items belongs in `library/` (skill `feedback-form-library`).
 
 A template can also ship its own page: `"page": "page.html"` in `form.json`, with the file next to
-it. Only do this when the standard page can't express the form. The page must use the same API:
-`GET /api/session`, `POST /api/response` with `{items: {id: {choice, note, value}}, general_note,
-submit}`, and `GET /api/outcomes`. Start from a copy of the plugin's `panel/index.html`.
+it. Only do this when the standard page can't express the form. The page must use the same API, with **relative**
+URLs (it's served under `/f/<session>/`): `GET api/session`, `POST api/response` with `{items: {id: {choice, note, value}}, general_note,
+submit}`, and `GET api/outcomes`. Start from a copy of the plugin's `panel/index.html`.
