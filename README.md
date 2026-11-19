@@ -7,10 +7,10 @@ local page, and every comment on it comes back anchored to the exact spot it is 
 
 | Artefact | Mode | How you give feedback |
 |---|---|---|
-| A document (PDF) | `feedback document` | Click a spot on a page and talk (or type); also "this page" and "whole document" |
+| A document (PDF) | `feedback document` | Drag across words, draw a box or pin a spot, then talk (or type); tag a category (Wording, Typography, Colour, Layout ...); "this page", "whole document"; a verdict per round |
 | A long list of items | `feedback new` | One answer per item from a set (Remove / Keep for now / Ask me ...), tick box or free text, with notes |
 | A diagram (Graphviz) | `feedback diagram` | Click boxes, connections and zones; answer and/or note |
-| Audio, video | planned | Same model: a comment pinned to a timestamp instead of a page position |
+| Plain text, scripts, email drafts, images, audio, video | planned | Same model; see [`ROADMAP.md`](ROADMAP.md) |
 
 The framework (what every mode must do, and why voice comes first) is in [`FRAMEWORK.md`](FRAMEWORK.md).
 
@@ -30,17 +30,21 @@ feedback transcribe                                   # voice comments -> text (
 feedback result                                       # or --json
 ```
 
-Click anywhere on a page: a numbered pin drops there and recording starts at once; click **Stop**
-(or press Esc) when done. **This page** and **Whole document** record comments that aren't about one
-spot. Every comment can carry a typed note instead of, or as well as, audio; re-record at will.
-`result` lists the comments in reading order with the text under each pin (the line and its
-paragraph, cut from the PDF so right-to-left scripts come out in reading order), what you said, and
-what you wrote:
+Three tools: **Text** (drag across words: the comment is about exactly that phrase), **Area** (draw a
+box: a heading's look, a table's spacing, a chart) and **Pin** (click a spot). Recording starts as
+soon as you've pointed; **Stop** or Esc ends it. Each comment gets a **category** chip (Wording,
+Structure, Typography, Colour, Layout & spacing, Images & charts, Other; text selections default to
+Wording, areas to Layout), and wording comments an optional **intent** (Rephrase, Replace, Delete,
+Insert, Keep as is). **This page** and **Whole document** take comments that aren't about one spot,
+categorised the same way ("the font is too formal everywhere" → Typography). Each round gets a
+**verdict**: Approve as is / Approve with these changes / Needs another round. `result` lists the
+comments in reading order with the exact selected text (cut from the PDF, so right-to-left scripts
+come out in reading order), what you said and what you wrote:
 
 ```
-## 2. Page 1 (pinned)  [c1k9...]
-> at: "A. Who I am"
-> in: "A. Who I am 1. Since August 2026 I have lived ..."
+## 3. Page 1 (text) — Wording · Rephrase  [c1k9...]
+> selected: "music from the Machane"
+> in: "Amplified music from the Machane Yehuda market bars, heard in ..."
 
 Said: Please make the opening paragraph more narrative and less choppy.
 ```

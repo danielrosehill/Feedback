@@ -63,6 +63,14 @@ DOCUMENT_HTML = ROOT / "panel" / "document.html"
 CID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 AUDIO_EXT = {"webm", "ogg", "mp4", "m4a", "wav", "mp3"}
 MAX_AUDIO = 60 * 1024 * 1024
+# Feedback dimensions per document kind (FRAMEWORK.md rule 2b). `--categories` overrides.
+CATEGORY_PRESETS = {
+    "designed": ["Wording", "Structure", "Typography", "Colour", "Layout & spacing", "Images & charts", "Other"],
+    "text": ["Wording", "Structure", "Tone", "Facts", "Other"],
+}
+WORDING_INTENTS = ["Rephrase", "Replace", "Delete", "Insert", "Keep as is"]
+VERDICTS = ["Approve as is", "Approve with these changes", "Needs another round"]
+SCOPES = ("point", "page", "document", "text", "area")
 HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
 TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
 FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "mark_tone", "suggest_choice", "submit_hint",
@@ -278,13 +286,24 @@ def make_handler(sess):
                 items = read_json(sess / "items.json")
                 items.pop("_template_form", None)
                 if items.get("mode") == "document":
-                    return self.send(200, {"items": items, "comments": read_json(sess / "comments.json", []),
+                    lay = []
+                    for pg in read_json(sess / "layout.json", []):
+                        W, H = pg["w"], pg["h"]
+                        nb = lambda r: [round(r[0] / W, 5), round(r[1] / H, 5), round(r[2] / W, 5), round(r[3] / H, 5)]
+                        lay.append([{"words": [nb(w) for w in l["words"]], "rtl": l["rtl"]}
+                                    for b in pg["blocks"] for l in b["lines"] if isinstance(l, dict)])
+                    return self.send(200, {"items": items, "layout": lay, "comments": read_json(sess / "comments.json", []),
+                                           "intents": WORDING_INTENTS, "verdicts": VERDICTS,
                                            "response": read_json(sess / "response.json", {}),
                                            "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
                 return self.send(200, {"items": items, "response": read_json(sess / "response.json", {}),
                                        "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
             if path == "/api/outcomes":
                 return self.send(200, read_json(sess / "outcomes.json", {}))
+            if path == "/api/anchor":  # the text a document comment points at, for the page to show
+                cid = dict(kv.split("=", 1) for kv in self.path.partition("?")[2].split("&") if "=" in kv).get("id", "")
+                c = next((c for c in read_json(sess / "comments.json", []) if c["id"] == cid), None)
+                return self.send(200, anchor_text(sess, c) if c else {})
             m = re.match(r"^/pages/(\d+)\.png$", path)
             if m and (sess / "pages" / f"{m.group(1)}.png").exists():
                 return self.send(200, (sess / "pages" / f"{m.group(1)}.png").read_bytes(), "image/png")
@@ -360,12 +379,23 @@ def make_handler(sess):
                     cid = str(c.get("id", ""))
                     if not CID_RE.match(cid):
                         continue
-                    scope = c.get("scope") if c.get("scope") in ("point", "page", "document") else "point"
+                    scope = c.get("scope") if c.get("scope") in SCOPES else "point"
                     page = c.get("page") if isinstance(c.get("page"), int) and 1 <= c["page"] <= npages else None
                     e = {"id": cid, "scope": scope, "page": None if scope == "document" else page,
                          "x": float(c["x"]) if scope == "point" and isinstance(c.get("x"), (int, float)) else None,
                          "y": float(c["y"]) if scope == "point" and isinstance(c.get("y"), (int, float)) else None,
                          "note": str(c.get("note") or ""), "created": old.get(cid, {}).get("created", now())}
+                    if scope in ("text", "area"):
+                        rects = [[float(v) for v in r][:4] for r in (c.get("rects") or [])[:60]
+                                 if isinstance(r, list) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r)]
+                        if not rects or page is None:
+                            continue
+                        e["rects"] = rects
+                    cats = items.get("categories") or []
+                    if c.get("category") in cats:
+                        e["category"] = c["category"]
+                    if c.get("intent") in WORDING_INTENTS:
+                        e["intent"] = c["intent"]
                     audio = str(c.get("audio") or "")
                     if audio and (sess / "audio" / audio).exists() and audio.startswith(cid + "."):
                         e["audio"] = audio
@@ -373,12 +403,14 @@ def make_handler(sess):
                         prev = old.get(cid, {})
                         if prev.get("audio") == audio and prev.get("transcript"):  # keep a transcript for the same take
                             e["transcript"], e["transcript_by"] = prev["transcript"], prev.get("transcript_by")
-                    if e.get("audio") or e["note"].strip():
+                    if e.get("audio") or e["note"].strip() or e.get("intent") or e.get("category"):
                         out.append(e)
                 write_json(sess / "comments.json", out)
                 submit = bool(data.get("submit"))
                 prev = read_json(sess / "response.json", {})
                 resp = {"status": "submitted" if submit else "draft", "updated": now(),
+                        "verdict": data.get("verdict") if data.get("verdict") in VERDICTS else prev.get("verdict"),
+                        "general_note": str(data.get("general_note") or prev.get("general_note") or ""),
                         "created": prev.get("created", now()),
                         "submitted_at": now() if submit else prev.get("submitted_at"),
                         "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
@@ -591,20 +623,27 @@ def cmd_diagram(a):
 # ---------------------------------------------------------------- document review
 
 def pdf_layout(pdf):
-    """Line and block rectangles per page, in PDF points, from pdftotext -bbox-layout.
+    """Blocks, lines and word rectangles per page, in PDF points, from pdftotext -bbox-layout.
     Text is NOT taken from here: for right-to-left scripts the bbox words come out in visual
-    order. Anchor text is cropped out with plain pdftotext instead (anchor_text)."""
+    order. Anchor text is cut out with plain pdftotext instead (crop_text). Each line carries
+    `rtl` so the page can extend a selection in reading direction."""
     import xml.etree.ElementTree as ET
     raw = subprocess.run(["pdftotext", "-bbox-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
     raw = re.sub(r"<!DOCTYPE[^>]*>", "", raw)
     root = ET.fromstring(raw)
-    ns = {"h": "http://www.w3.org/1999/xhtml"}
-    pages = []
+    X = "{http://www.w3.org/1999/xhtml}"
     box = lambda e: [round(float(e.get(k)), 2) for k in ("xMin", "yMin", "xMax", "yMax")]
-    for pg in root.iter("{http://www.w3.org/1999/xhtml}page"):
+    rtl_re = re.compile(r"[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]")
+    pages = []
+    for pg in root.iter(X + "page"):
         blocks = []
-        for b in pg.iter("{http://www.w3.org/1999/xhtml}block"):
-            blocks.append({"box": box(b), "lines": [box(l) for l in b.findall("h:line", ns)]})
+        for b in pg.iter(X + "block"):
+            lines = []
+            for l in b.findall(X + "line"):
+                words = l.findall(X + "word")
+                text = "".join(w.text or "" for w in words)
+                lines.append({"box": box(l), "words": [box(w) for w in words], "rtl": bool(rtl_re.search(text))})
+            blocks.append({"box": box(b), "lines": lines})
         pages.append({"w": float(pg.get("width")), "h": float(pg.get("height")), "blocks": blocks})
     return pages
 
@@ -619,25 +658,48 @@ def crop_text(pdf, page, rect):
 
 
 def anchor_text(sess, c):
-    """The line and the paragraph (block) nearest a pinned comment, in reading order."""
-    if c.get("scope") != "point" or c.get("page") is None:
+    """What a comment points at, as text in reading order:
+    text  -> the exact selected words (`quote`) and the paragraph around them
+    area  -> the text inside the box (if any)
+    point -> the nearest line and its paragraph"""
+    if c.get("page") is None or c.get("scope") in ("page", "document"):
         return {}
     layout = read_json(sess / "layout.json") or []
     if c["page"] > len(layout):
         return {}
     pg = layout[c["page"] - 1]
-    px, py = c["x"] * pg["w"], c["y"] * pg["h"]
-    best = None
-    for b in pg["blocks"]:
-        for l in b["lines"]:
-            dy = 0 if l[1] <= py <= l[3] else min(abs(py - l[1]), abs(py - l[3]))
-            dx = 0 if l[0] <= px <= l[2] else min(abs(px - l[0]), abs(px - l[2]))
-            d = dy + 0.1 * dx  # a pin sits on or beside a line; the vertical distance decides
-            if best is None or d < best[0]:
-                best = (d, l, b, dy)
+    W, H = pg["w"], pg["h"]
+    pdf = sess / "document.pdf"
+    to_pt = lambda r: [r[0] * W, r[1] * H, r[2] * W, r[3] * H]
+
+    def block_at(px, py):
+        best = None
+        for b in pg["blocks"]:
+            for l in b["lines"]:
+                lb = l["box"] if isinstance(l, dict) else l
+                dy = 0 if lb[1] <= py <= lb[3] else min(abs(py - lb[1]), abs(py - lb[3]))
+                dx = 0 if lb[0] <= px <= lb[2] else min(abs(px - lb[0]), abs(px - lb[2]))
+                d = dy + 0.1 * dx  # the vertical distance decides
+                if best is None or d < best[0]:
+                    best = (d, lb, b, dy)
+        return best
+
+    if c["scope"] in ("text", "area") and c.get("rects"):
+        rects = [to_pt(r) for r in c["rects"]]
+        quote = " ".join(t for t in (crop_text(pdf, c["page"], r) for r in rects) if t)
+        r0 = rects[0]
+        best = block_at((r0[0] + r0[2]) / 2, (r0[1] + r0[3]) / 2)
+        out = {"quote": quote[:1200]}
+        if best and best[3] <= 30 and c["scope"] == "text":
+            para = crop_text(pdf, c["page"], best[2]["box"])
+            if para and para != quote:
+                out["paragraph"] = para[:600]
+        return out
+    if c.get("x") is None:
+        return {}
+    best = block_at(c["x"] * W, c["y"] * H)
     if not best or best[3] > 30:
         return {"near": None}
-    pdf = sess / "document.pdf"
     return {"line": crop_text(pdf, c["page"], best[1]), "paragraph": crop_text(pdf, c["page"], best[2]["box"])[:600]}
 
 
@@ -660,10 +722,11 @@ def cmd_document(a):
         p.rename(sess / "pages" / f"{i}.png")
     layout = pdf_layout(src)
     write_json(sess / "layout.json", layout)
-    items = {"mode": "document", "title": a.title or src.stem, "source": str(src),
-             "instructions": a.instructions or "Click anywhere on a page to pin a voice comment there, or use "
-             "'Whole document' / 'This page'. Recording starts at once; click Stop when you're done. "
-             "Type instead of talking if you prefer. Press Submit when you've finished a round.",
+    cats = [c.strip() for c in a.categories.split(",") if c.strip()] if a.categories else CATEGORY_PRESETS[a.preset]
+    items = {"mode": "document", "title": a.title or src.stem, "source": str(src), "categories": cats,
+             "instructions": a.instructions or "Pick a tool: Text (drag across words), Area (draw a box), Pin (click). "
+             "Recording starts as soon as you've pointed; Stop or Esc ends it. Tag each comment's category. "
+             "'Whole document' for overall points. Choose a verdict and Submit the round.",
              "pages": [{"n": i, "img": f"/pages/{i}.png", "w": pg["w"], "h": pg["h"]} for i, pg in enumerate(layout, 1)],
              "input": "document", "groups": []}
     write_json(sess / "items.json", items)
@@ -762,18 +825,23 @@ def document_result(sess):
     items = read_json(sess / "items.json")
     resp = read_json(sess / "response.json", {})
     oc = read_json(sess / "outcomes.json", {})
-    order = {"document": 0, "page": 1, "point": 2}
+    order = {"document": 0, "page": 1, "point": 2, "text": 2, "area": 2}
     comments = sorted(read_json(sess / "comments.json", []),
-                      key=lambda c: (c.get("page") or 0, order[c["scope"]], c.get("y") or 0))
+                      key=lambda c: (c.get("page") or 0, order[c["scope"]],
+                                     c.get("y") if c.get("y") is not None else (c.get("rects") or [[0, 0]])[0][1]))
     rows = []
     for i, c in enumerate(comments, 1):
         rows.append({"n": i, "id": c["id"], "scope": c["scope"], "page": c.get("page"),
+                     "category": c.get("category"), "intent": c.get("intent"), "rects": c.get("rects"),
                      "at": None if c.get("x") is None else {"x": round(c["x"], 3), "y": round(c["y"], 3)},
                      "anchor": anchor_text(sess, c), "note": c.get("note", ""),
                      "transcript": c.get("transcript"), "audio": str(sess / "audio" / c["audio"]) if c.get("audio") else None,
                      "duration_s": c.get("duration_s"), "outcome": oc.get(c["id"])})
     return {"session": str(sess), "mode": "document", "title": items.get("title"), "source": items.get("source"),
-            "status": resp.get("status", "untouched"), "rounds": resp.get("rounds", 0), "comments": rows,
+            "status": resp.get("status", "untouched"), "rounds": resp.get("rounds", 0), "verdict": resp.get("verdict"),
+            "general_note": resp.get("general_note", ""), "comments": rows,
+            "by_category": {k: [r["n"] for r in rows if (r.get("category") or "Uncategorised") == k]
+                            for k in dict.fromkeys((r.get("category") or "Uncategorised") for r in rows)},
             "untranscribed": sum(1 for r in rows if r["audio"] and not r["transcript"])}
 
 
@@ -781,10 +849,22 @@ def print_document_result(out):
     print(f"# Feedback on {out['title']}  ({out['status']}, round {out['rounds']}, {len(out['comments'])} comments"
           + (f", {out['untranscribed']} not yet transcribed" if out["untranscribed"] else "") + ")")
     print(f"Source: {out['source']}")
+    if out.get("verdict"):
+        print(f"Verdict: {out['verdict']}")
+    if out.get("general_note"):
+        print(f"General note: {out['general_note']}")
+    if out["comments"]:
+        print("By category: " + "; ".join(f"{k} {', '.join(map(str, v))}" for k, v in out["by_category"].items()))
     for r in out["comments"]:
-        where = "Whole document" if r["scope"] == "document" else f"Page {r['page']}" + ("" if r["scope"] == "page" else " (pinned)")
-        print(f"\n## {r['n']}. {where}  [{r['id']}]")
+        kind = {"document": "", "page": "", "point": " (pinned)", "text": " (text)", "area": " (area)"}[r["scope"]]
+        where = "Whole document" if r["scope"] == "document" else f"Page {r['page']}{kind}"
+        tags = " · ".join(t for t in (r.get("category"), r.get("intent")) if t)
+        print(f"\n## {r['n']}. {where}" + (f" — {tags}" if tags else "") + f"  [{r['id']}]")
         an = r.get("anchor") or {}
+        if an.get("quote"):
+            print(f"> {'selected' if r['scope'] == 'text' else 'in box'}: \"{an['quote'][:600]}\"")
+            if an.get("paragraph"):
+                print(f"> in: \"{an['paragraph'][:300]}\"")
         if an.get("line"):
             print(f"> at: \"{an['line']}\"")
             if an.get("paragraph") and an["paragraph"] != an["line"]:
@@ -1090,6 +1170,9 @@ def main():
     x = sp.add_parser("document", help="PDF -> a page you review by pinning voice (or typed) comments")
     x.add_argument("file"); x.add_argument("--title"); x.add_argument("--name"); x.add_argument("--instructions")
     x.add_argument("--dpi", type=int, default=110); x.add_argument("--no-open", action="store_true")
+    x.add_argument("--preset", choices=sorted(CATEGORY_PRESETS), default="designed",
+                   help="feedback categories: designed (wording + typography, colour, layout...) or text (wording, structure, tone, facts)")
+    x.add_argument("--categories", help="comma-separated categories instead of the preset")
     x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_document)
     x = sp.add_parser("transcribe", help="transcribe a document session's voice comments (OpenAI-compatible ASR)")
     x.add_argument("session", nargs="?"); x.add_argument("--all", action="store_true", help="redo existing transcripts")

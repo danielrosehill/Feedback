@@ -39,3 +39,20 @@ feedback.
   (OpenAI-compatible) in under 2 s, giving "Please make the opening paragraph more narrative and
   less choppy."
 - Not yet verified: recording from a real microphone in the browser (needs a person at the page).
+
+**v0.7.0 (2026-11-19, same day).** Added after the user asked for feedback on font, colour and
+layout as distinct from wording, which needs more precise pointing:
+- **Text tool:** drag across words, using the word boxes from `-bbox-layout` (positions only);
+  within a line the selection is contiguous in visual order, and across lines it extends in each
+  line's reading direction (`rtl` flag per line). The quote is cut per line rectangle with
+  `pdftotext`.
+- **Area tool:** draw a box.
+- **Category chips:** preset `designed` / `text`, or `--categories`.
+- **Wording intents and a round verdict.**
+- Prior art reviewed: Ziflow, a proofing tool, separates copy (text-selection marks: replace,
+  delete, insert) from design (pins and shapes). Acrobat and Kami have voice comments but no
+  span anchoring or structured transcripts. The W3C Web Annotation selectors (TextQuote,
+  TextPosition) are the model for re-anchoring across versions (ROADMAP).
+- Verified: selecting words on an English line gives "music from the Machane"; on a Hebrew line,
+  "מתנגד לחיי לילה בירושלים." in reading order; area and whole-document comments are grouped by
+  category, and the verdict comes back in `result`.

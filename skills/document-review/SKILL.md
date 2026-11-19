@@ -16,8 +16,12 @@ feedback document <file.pdf> --title "<what it is, version>"
 
 - Not a PDF yet? Export it first (Typst/LaTeX compile, `pandoc`, LibreOffice
   `soffice --headless --convert-to pdf`).
-- Tell the user in one line: click a spot and talk, **Stop** or Esc to finish a comment,
-  "This page" / "Whole document" for broader comments, then **Submit round**.
+- Categories: `--preset designed` (default: Wording, Structure, Typography, Colour, Layout &
+  spacing, Images & charts) for laid-out documents, `--preset text` (Wording, Structure, Tone,
+  Facts) for prose, or `--categories "A,B,C"`.
+- Tell the user in one line: Text (drag across words), Area (draw a box) or Pin, then talk;
+  Stop or Esc ends a comment; tag a category; "Whole document" for overall points; pick a
+  verdict and **Submit round**.
 - Run `feedback wait` in the background (it returns on Submit), or wait for the user to say
   they're done.
 
@@ -40,8 +44,14 @@ feedback result                # reading order: anchor (line + paragraph), what 
 feedback result --json         # same, as records
 ```
 
-- Treat each comment as an instruction about its anchor. "Whole document" comments come first and
-  usually set the direction for the rest.
+- Treat each comment as an instruction about its anchor: a text comment is about exactly the
+  `selected` quote; an area comment about that region's look; the category says which dimension
+  (wording vs typography vs layout) to change, the intent how (rephrase, delete ...).
+  "Whole document" comments come first and usually set the direction for the rest.
+- The **verdict** decides what happens next: Approve as is → finalise (or send); Approve with these
+  changes → apply them and finalise without another round; Needs another round → apply, rebuild,
+  open the next version.
+- A comment with no category: suggest one from the transcript when you report back.
 - If a transcript is ambiguous, play nothing back and don't guess. Ask about that comment by
   number, quoting the transcript.
 - Make the changes in the **source** (not the PDF), rebuild, and keep the previous version.
