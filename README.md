@@ -1,30 +1,66 @@
-# Feedback-Panel
+# Feedback
 
-A Claude Code plugin for decisions with too many items for a terminal multiple-choice question.
-Claude writes the items as JSON. `feedback-panel` serves them as a local web form, where each item
-gets one answer from a set (e.g. **Remove / Keep for now / Ask me**), a single tick box, or a
-free-text reply. The form has search, filters, per-item notes, "Claude suggests" tags and number
-keys. Answers autosave to a JSON file that Claude reads back and acts on. Claude then writes an
-outcome for each item, which the open page shows.
+Voice-first feedback from a person to an AI agent, on whatever the agent made. The person reacts
+the way people react most precisely and least tiringly, by **talking, pointing at the thing**.
+The agent gets back structured feedback that it can act on item by item. Every artefact gets a
+local page, and every comment on it comes back anchored to the exact spot it is about:
 
-![The software-review form part-way through: Remove / Keep for now / Ask me per item, with per-answer counts, filters and number-key hints](docs/screenshot.png)
+| Artefact | Mode | How you give feedback |
+|---|---|---|
+| A document (PDF) | `feedback document` | Click a spot on a page and talk (or type); also "this page" and "whole document" |
+| A long list of items | `feedback new` | One answer per item from a set (Remove / Keep for now / Ask me ...), tick box or free text, with notes |
+| A diagram (Graphviz) | `feedback diagram` | Click boxes, connections and zones; answer and/or note |
+| Audio, video | planned | Same model: a comment pinned to a timestamp instead of a page position |
+
+The framework (what every mode must do, and why voice comes first) is in [`FRAMEWORK.md`](FRAMEWORK.md).
+
+- Stdlib Python 3, no dependencies; `poppler-utils` (`pdftoppm`, `pdftotext`) for documents.
+- The server binds `127.0.0.1` and rejects cross-origin writes. Audio stays in the session folder
+  until *you* choose where it is transcribed.
+- One session per review in `~/.local/share/feedback-panel/sessions/` (`FEEDBACK_PANEL_HOME`).
+  `feedback wait` blocks until Submit; `feedback result` gives the structured feedback;
+  `feedback outcome` writes back what was done about each comment, and the open page shows it.
+
+## Document review: voice comments on a PDF
+
+```bash
+feedback document report.pdf --title "Report v3"     # opens the page
+feedback wait                                         # until you press Submit
+feedback transcribe                                   # voice comments -> text (your ASR backend)
+feedback result                                       # or --json
+```
+
+Click anywhere on a page: a numbered pin drops there and recording starts at once; click **Stop**
+(or press Esc) when done. **This page** and **Whole document** record comments that aren't about one
+spot. Every comment can carry a typed note instead of, or as well as, audio; re-record at will.
+`result` lists the comments in reading order with the text under each pin (the line and its
+paragraph, cut from the PDF so right-to-left scripts come out in reading order), what you said, and
+what you wrote:
 
 ```
-template / library form ─┐
-Claude ──items.json──────┴▶ feedback-panel new ──▶ browser form (answer, note, Submit)
-                                                        │ autosave
-Claude ◀── feedback-panel result ◀── response.json ─────┘
-Claude ──feedback-panel outcome──▶ outcomes.json ──▶ page shows done / failed / skipped
+## 2. Page 1 (pinned)  [c1k9...]
+> at: "A. Who I am"
+> in: "A. Who I am 1. Since August 2026 I have lived ..."
+
+Said: Please make the opening paragraph more narrative and less choppy.
 ```
 
-- Stdlib Python 3, no dependencies. The server binds `127.0.0.1` and rejects cross-origin writes.
-- One session per review in `~/.local/share/feedback-panel/sessions/`. `feedback-panel wait`
-  blocks until Submit.
-- Forms come from the sibling repo
-  [Feedback-Panel-Templates](https://github.com/danielrosehill/Feedback-Panel-Templates):
-  - `templates/`: generic answer sets.
-  - `library/`: forms worth keeping, each with a recipe for rebuilding its items.
-  - `feedback-panel save` puts a good session into the library.
+### Transcription backends
+
+`feedback transcribe` posts each recording to an **OpenAI-compatible** `/audio/transcriptions`
+endpoint, so one setting covers hosted and self-hosted engines alike: OpenAI Whisper, Groq,
+a speaches / faster-whisper server, whisper.cpp's server, an NVIDIA Parakeet wrapper, LocalAI, or
+a desktop app that exposes the API.
+
+```jsonc
+// ~/.local/share/feedback-panel/config.json
+{ "asr": { "url": "http://my-server:8000/v1", "model": "whisper-1", "key_env": "MY_ASR_KEY",
+           "language": "en", "prompt": "Vocabulary: ..." } }
+```
+
+or per run: `FEEDBACK_ASR_URL`, `FEEDBACK_ASR_KEY`, `FEEDBACK_ASR_MODEL`, `FEEDBACK_ASR_LANGUAGE`.
+With no backend, `feedback transcribe --list` prints the audio files and
+`feedback set-transcript <session> <id> -f text.txt` stores a transcript made any other way.
 
 ## Diagram review
 
@@ -37,8 +73,8 @@ lists what each element connects to, and a running list of your comments jumps b
 ![Diagram review of the Home Canopy poster: the gateway marked Move with a note, a connection and the Cloudflare zone marked Rethink, catalogue selected with its connections listed](docs/diagram-review.png)
 
 ```bash
-feedback-panel diagram a.dot b.dot --font-dir fonts/ -o items.json   # one tab per file
-feedback-panel new items.json --template architecture-review
+feedback diagram a.dot b.dot --font-dir fonts/ -o items.json   # one tab per file
+feedback new items.json --template architecture-review
 ```
 
 - Item ids are `<file-stem>:node:<name>`, `<file-stem>:edge:<a>-><b>` (`#2`, `#3` for repeats) and
@@ -52,17 +88,19 @@ feedback-panel new items.json --template architecture-review
 
 | Skill | For |
 |---|---|
+| `document-review` | Voice (or typed) comments pinned to a PDF, transcribed, acted on, round after round |
 | `feedback-panel` | The loop: build items, open, read the result, act, report outcomes, offer to keep the form |
-| `feedback-form-template` | Pick a template for the answers Daniel wants, or add a new template |
+| `feedback-form-template` | Pick a template for the answers the user wants, or add a new template |
 | `feedback-form-library` | Run a saved form from its recipe, or save a session into the library |
 
 ## Install
 
 ```bash
 cd ~/repos/github/ai-agents-and-prompts/ai-claude-plugins
-gh repo clone danielrosehill/Feedback-Panel
-gh repo clone danielrosehill/Feedback-Panel-Templates     # found as ../Feedback-Panel-Templates
-ln -sf "$PWD/Feedback-Panel/bin/feedback-panel" ~/.local/bin/
+gh repo clone danielrosehill/Feedback
+gh repo clone danielrosehill/Feedback-Panel-Templates     # optional: your form templates, found as ../Feedback-Panel-Templates
+ln -sf "$PWD/Feedback/bin/feedback" ~/.local/bin/
+ln -sf "$PWD/Feedback/bin/feedback" ~/.local/bin/feedback-panel   # old name, still accepted
 ```
 
 Override locations with `FEEDBACK_PANEL_TEMPLATES` and `FEEDBACK_PANEL_HOME`. Format: `SCHEMA.md`.
@@ -71,3 +109,9 @@ Override locations with `FEEDBACK_PANEL_TEMPLATES` and `FEEDBACK_PANEL_HOME`. Fo
 
 - `endpoint-management` › `software-inventory`: every installed program on a Linux machine.
   Its form is the library entry `software-review`.
+
+## History
+
+Renamed from **Feedback-Panel** on 2026-11-19, when document review made the plugin about feedback
+in general rather than forms. The `feedback-panel` command is kept as an alias, and the session
+folder and environment variables keep their old names, so existing sessions and callers still work.

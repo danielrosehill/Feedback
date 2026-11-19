@@ -4,18 +4,18 @@
 **Status:** chosen
 
 ## Context
-Daniel wants to tick through long lists (installed software, plugins) and have Claude act on the
+The user wants to tick through long lists (installed software, plugins) and have Claude act on the
 ticks, invoked repeatedly as a reusable skill. The terminal's multiple-choice question tops out at a
 handful of options.
 
 ## Options considered
 - **Static HTML + localStorage, with a copy/export button.** No server. But results only reach
-  Claude if Daniel copies or downloads them, and nothing can flow back into the page.
+  Claude if the user copies or downloads them, and nothing can flow back into the page.
 - **Hosted claude.ai artifact with a shared database.** Claude reads the results directly. But the
   lists are often machine inventories, which shouldn't leave the LAN, and it depends on that
   surface being available.
 - **Local stdlib server (chosen).** It autosaves ticks to `response.json`, which Claude reads
-  directly. `wait` tells Claude when Daniel presses Submit, and outcomes flow back into the open page.
+  directly. `wait` tells Claude when the user presses Submit, and outcomes flow back into the open page.
   It works offline and nothing leaves the machine.
 - **Native GUI (Qt).** More work, and adds nothing a browser page can't already do.
 

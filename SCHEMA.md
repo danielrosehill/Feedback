@@ -5,7 +5,7 @@ A form is answer options plus items. Answer options normally come from a templat
 
 ```jsonc
 {
-  "title": "Installed software on danieldesktop",      // page heading ({host}/{date} filled from templates)
+  "title": "Installed software on my-desktop",      // page heading ({host}/{date} filled from templates)
   "instructions": "...",                               // shown under the heading
 
   // --- how items are answered (usually from the template) ---

@@ -4,12 +4,12 @@
 **Status:** chosen
 
 ## Context
-A single tick box can't express "remove / keep for now / ask me". Daniel also wants ready-made
+A single tick box can't express "remove / keep for now / ask me". The user also wants ready-made
 forms so each one isn't designed from scratch, and a way to keep good forms (e.g. the software
 review) and rerun them later.
 
 ## Options considered
-- **Templates inside the plugin repo.** One repo. But kept forms are Daniel's data, they change
+- **Templates inside the plugin repo.** One repo. But kept forms are the user's data, they change
   often, and they would force plugin version bumps.
 - **A separate templates repo (chosen).** It holds only data: `templates/` (generic) and
   `library/` (kept forms, with a recipe for each). The plugin stays code plus skills.

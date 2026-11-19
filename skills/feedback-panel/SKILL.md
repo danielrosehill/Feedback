@@ -1,17 +1,18 @@
 ---
 name: feedback-panel
-description: Put a long list of items in front of Daniel as a local web form (one answer per item from a set like Remove / Keep for now / Ask me, a single tick box, or free text; search, filters, notes, "Claude suggests" tags, autosave), then read back exactly what he chose and act on it, round after round. Use whenever a decision covers more items than a terminal multiple-choice question can hold - reviewing dozens of packages, plugins, repos, files, emails, skills, MCP servers, tasks - or many open questions at once; or when Daniel says "make me a feedback panel/form", "give me a checklist", "let me tick them in a page", "I've ticked them", "done with the panel". Start from a template or a saved library form (skills feedback-form-template, feedback-form-library).
+description: Put a long list of items in front of the user as a local web form (one answer per item from a set like Remove / Keep for now / Ask me, a single tick box, or free text; search, filters, notes, "Claude suggests" tags, autosave), then read back exactly what they chose and act on it, round after round. Use whenever a decision covers more items than a terminal multiple-choice question can hold - reviewing dozens of packages, plugins, repos, files, emails, skills, MCP servers, tasks - or many open questions at once; or when the user says "make me a feedback panel/form", "give me a checklist", "let me tick them in a page", "I've ticked them", "done with the panel". Start from a template or a saved library form (skills feedback-form-template, feedback-form-library).
 ---
 
 # Feedback panel
 
-A local page Daniel works through and a JSON file Claude reads. Nothing leaves the machine: the
+A local page the user works through and a JSON file Claude reads. Nothing leaves the machine: the
 server binds 127.0.0.1 and accepts writes only from its own page.
 
-- CLI `feedback-panel`, stdlib Python, on PATH via `~/.local/bin`. Source:
-  `~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel/bin/feedback-panel`.
-- Templates and the library: `~/repos/github/ai-agents-and-prompts/ai-claude-plugins/Feedback-Panel-Templates`
-  (repo `danielrosehill/Feedback-Panel-Templates`).
+- CLI `feedback` (alias `feedback-panel`), stdlib Python, on PATH via `~/.local/bin`; source
+  `<plugin root>/bin/feedback`. If it's missing: `ln -sf <plugin root>/bin/feedback ~/.local/bin/`.
+- Templates and the library: a sibling repo `Feedback-Panel-Templates` next to the plugin, or
+  wherever `FEEDBACK_PANEL_TEMPLATES` points.
+- For feedback on a document (PDF), use skill `document-review` instead; principles in `FRAMEWORK.md`.
 - Item format: `SCHEMA.md` at the plugin root.
 - If either repo is missing, `gh repo clone` it to that path, then
   `ln -sf <Feedback-Panel>/bin/feedback-panel ~/.local/bin/`.
@@ -20,12 +21,12 @@ server binds 127.0.0.1 and accepts writes only from its own page.
 
 - `feedback-panel templates` lists the generic **templates** (remove-keep-ask,
   keep-archive-delete, approve-reject-revise, priority, yes-no-unsure, rating-5, check, questions)
-  and Daniel's saved **library** forms.
+  and the user's saved **library** forms.
 - If a library form fits the request, use it: skill `feedback-form-library`. It carries its own
   recipe for building the items.
-- Otherwise pick the template whose answers match what Daniel asked for: skill
+- Otherwise pick the template whose answers match what the user asked for: skill
   `feedback-form-template`.
-- If he names his own answers ("remove, keep for now, ask me"), use a template with those choices
+- If the user names their own answers ("remove, keep for now, ask me"), use a template with those choices
   or put `choices` straight into the items file.
 
 ## 1. Build the items file
@@ -44,7 +45,7 @@ come from the template; don't repeat them in the items file.
   - `{id: {"choice": "ask", "reason": "..."}}` suggests a specific answer.
 
   Keep reasons factual ("duplicate: the .deb is installed too", "3 GB, untouched since 2025-04").
-  Daniel can press "Apply suggestions" for each group.
+  The user can press "Apply suggestions" for each group.
 
 ### Diagrams: review an architecture element by element
 
@@ -57,7 +58,7 @@ feedback-panel new items.json --template architecture-review [--suggest s.json]
 ```
 
 Every node, edge and cluster becomes an item (`<stem>:node:<name>`, `<stem>:edge:<a>-><b>`,
-`<stem>:zone:<cluster>`); one tab per file. Daniel clicks elements on the diagram, answers
+`<stem>:zone:<cluster>`); one tab per file. The user clicks elements on the diagram, answers
 Fine / Rethink / Move / Remove / Explain and writes notes; a note with no answer is normal here,
 so read `notes_only` in the result as well. Suggestions (`--suggest`) show as tags on the element.
 Act on the diagram's *source*: when the `.dot` is generated, edit the generator, rebuild, and run a
@@ -70,8 +71,8 @@ feedback-panel new items.json --template <name> [--suggest suggestions.json] [--
 ```
 
 This starts a background server, opens the page and prints the session directory and URL. Tell
-Daniel in one line what's in it, how many items there are, and to press **Submit**. Then wait for
-him, or run `feedback-panel wait <session>` in the background (it exits on Submit) if you have
+The user in one line what's in it, how many items there are, and to press **Submit**. Then wait for
+them, or run `feedback-panel wait <session>` in the background (it exits on Submit) if you have
 other work to do meanwhile.
 
 ## 3. Read the result
@@ -81,8 +82,8 @@ feedback-panel result <session>          # answers grouped by choice, notes, fre
 feedback-panel result <session> --json   # by_choice{choice: [rows]}, answers[], notes_only[], with meta (incl. _remove)
 ```
 
-- `status: draft` means he changed something since the last Submit. Read it anyway if he says
-  he's done.
+- `status: draft` means the user changed something since the last Submit. Read it anyway if they say
+  they're done.
 - Notes are instructions, including notes on unanswered items. If one is ambiguous, ask about that
   item only.
 
@@ -98,8 +99,8 @@ The open page shows each outcome as a coloured tag within 5 s. Then give a short
 
 ### Repeating rounds
 
-One session serves a list that is worked through over several rounds: Daniel answers a batch,
-Submits, Claude acts, he answers the next batch on the same page.
+One session serves a list that is worked through over several rounds: the user answers a batch,
+Submits, Claude acts, the user answers the next batch on the same page.
 
 - Items whose outcome is `done` drop out of the page (every view except "With outcome" and
   "Finished"); groups with nothing left disappear; the header shows "N finished, hidden". Bulk

@@ -1,6 +1,6 @@
 ---
 name: feedback-form-library
-description: Daniel's library of saved feedback forms - forms that worked well enough to keep, each with its answer options and a recipe for rebuilding its items (e.g. software-review - every installed program, Remove / Keep for now / Ask me). Run a saved form again, or save the current feedback-panel session into the library. Use on "run the software review again", "use the form we had for X", "what forms do we have saved", "keep this form", "save this to the library", "this one's great, let's keep it".
+description: the user's library of saved feedback forms - forms that worked well enough to keep, each with its answer options and a recipe for rebuilding its items (e.g. software-review - every installed program, Remove / Keep for now / Ask me). Run a saved form again, or save the current feedback-panel session into the library. Use on "run the software review again", "use the form we had for X", "what forms do we have saved", "keep this form", "save this to the library", "this one's great, let's keep it".
 ---
 
 # Feedback form library
@@ -34,7 +34,7 @@ To list it: `feedback-panel templates` (the `## library` section).
 
 ## Save a session to the library
 
-When Daniel says to keep a form, or answers yes to the "keep this form?" offer:
+When the user says to keep a form, or answers yes to the "keep this form?" offer:
 
 ```bash
 feedback-panel save <session> <name> [--generator 'cmd writing items.json to "$OUT"'] [--description "one line"]

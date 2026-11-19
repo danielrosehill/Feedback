@@ -1,0 +1,1116 @@
+#!/usr/bin/env python3
+"""feedback-panel: put a long list of items in front of the user as a local web form, autosave
+their answers to a JSON file, and let Claude read the result back.
+
+Stdlib only. One session = one directory under $FEEDBACK_PANEL_HOME (default
+~/.local/share/feedback-panel/sessions/<YYYY-MM-DD-HHMMSS>-<slug>/) holding:
+
+  items.json     the form: items + answer options (see SCHEMA.md)
+  page.html      only when the form's template ships its own page
+  response.json  what the user answered (autosaved on every change)
+  outcomes.json  what Claude did about each item afterwards (shown back in the page)
+  server.json    pid / port / url of the running server
+
+Forms answer in one of three ways (`input`):
+  choice  every item gets one of the form's `choices` (e.g. Remove / Keep for now / Ask me)
+  check   a single tick box per item (`mark_label` says what a tick means)
+  text    every item is a question with a free-text answer
+
+Templates and saved forms live in a separate repo ($FEEDBACK_PANEL_TEMPLATES, default
+../Feedback-Panel-Templates next to this plugin): templates/<name>/form.json (generic) and
+library/<name>/form.json + recipe.md (forms worth keeping, with how to regenerate their items).
+
+Commands:
+  new <items.json> [--template NAME] [--suggest S.json] [--name SLUG] [--no-open] [--port N]
+  diagram <file.dot>... [-o items.json] [--font-dir D] [--label NAME]... [--title T]
+                                              Graphviz diagram(s) -> items for a clickable review:
+                                              every node, connection and zone is an item
+  serve <session> [--port N]                  run the server in the foreground
+  status [session]                            one-line state
+  result [session] [--json] [--new]                 answers grouped by choice, notes, free text
+  wait [session] [--timeout S] [--next]              block until the user presses Submit
+  outcome <session> <id> <done|skipped|failed> [text]
+  open | stop [session]                       reopen the page / stop the server
+  list                                        sessions, newest first
+  templates                                   list templates and saved library forms
+  template <name>                             print a template's form.json and recipe.md
+  save <session> <name> [--generator CMD] [--description TEXT] [--force]
+                                              keep this session's form in library/<name>/ (name may
+                                              be nested: system-maintenance/btrfs-snapshots)
+
+<session> may be a path, a directory name under the sessions dir, a unique substring of one, or
+'latest' (the default). Template names may be prefixed 'library:' or 'templates:' to disambiguate.
+"""
+import argparse
+import datetime as dt
+import http.server
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PANEL_HTML = ROOT / "panel" / "index.html"
+DIAGRAM_HTML = ROOT / "panel" / "diagram.html"
+DOCUMENT_HTML = ROOT / "panel" / "document.html"
+CID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+AUDIO_EXT = {"webm", "ogg", "mp4", "m4a", "wav", "mp3"}
+MAX_AUDIO = 60 * 1024 * 1024
+HOME = Path(os.environ.get("FEEDBACK_PANEL_HOME", Path.home() / ".local/share/feedback-panel")) / "sessions"
+TEMPLATES = Path(os.environ.get("FEEDBACK_PANEL_TEMPLATES", ROOT.parent / "Feedback-Panel-Templates"))
+FORM_KEYS = ("title", "instructions", "input", "choices", "mark_label", "mark_tone", "suggest_choice", "submit_hint",
+             "note_open", "note_placeholder")
+LOCK = threading.Lock()
+
+
+def now():
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def die(msg, code=1):
+    print(f"feedback-panel: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_json(p, default=None):
+    try:
+        return json.loads(Path(p).read_text())
+    except FileNotFoundError:
+        return default
+
+
+def write_json(p, data):
+    p = Path(p)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(p)
+
+
+# ---------------------------------------------------------------- sessions
+
+def sessions():
+    if not HOME.exists():
+        return []
+    return sorted((d for d in HOME.iterdir() if (d / "items.json").exists()), key=lambda d: d.name, reverse=True)
+
+
+def resolve(ref):
+    if not ref or ref == "latest":
+        s = sessions()
+        if not s:
+            die("no sessions yet")
+        return s[0]
+    p = Path(ref).expanduser()
+    if (p / "items.json").exists():
+        return p.resolve()
+    if (HOME / ref / "items.json").exists():
+        return HOME / ref
+    matches = [d for d in sessions() if ref in d.name]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:  # newest wins for a repeated form name
+        return matches[0]
+    die(f"no session matches {ref!r}")
+
+
+def all_items(items):
+    for g in items.get("groups", []):
+        for it in g.get("items", []):
+            yield g, it
+
+
+# ---------------------------------------------------------------- form model
+
+def normalize(items):
+    """Fill in input/choices so the page and result only deal with one shape."""
+    if items.get("input") not in ("choice", "check", "text"):
+        items["input"] = "choice" if items.get("choices") else "check"
+    if items["input"] == "check":
+        items["choices"] = [{"id": "marked", "label": items.get("mark_label") or "Ticked",
+                             "tone": items.get("mark_tone") or "danger"}]
+    if items["input"] == "choice" and not items.get("choices"):
+        die("input 'choice' needs a 'choices' list")
+    for c in items.get("choices", []):
+        if "id" not in c or "label" not in c:
+            die("every choice needs 'id' and 'label'")
+    if items.get("suggest_choice") is None and items.get("choices"):
+        items["suggest_choice"] = items["choices"][0]["id"]
+    return items
+
+
+def choices_for(items, group):
+    return group.get("choices") or items.get("choices") or []
+
+
+def validate(items):
+    if not isinstance(items.get("groups"), list) or not items["groups"]:
+        die("items.json needs a non-empty 'groups' list")
+    seen = set()
+    for g, it in all_items(items):
+        if "id" not in it or "label" not in it:
+            die(f"every item needs 'id' and 'label' (group {g.get('name')!r})")
+        if it["id"] in seen:
+            die(f"duplicate item id {it['id']!r}")
+        seen.add(it["id"])
+    return len(seen)
+
+
+def forms(kind):
+    """(relative path, dir) for every form under templates/ or library/, nested folders included."""
+    base = TEMPLATES / kind
+    if not base.exists():
+        return []
+    return sorted((str(f.parent.relative_to(base)), f.parent) for f in base.rglob("form.json"))
+
+
+def find_template(name):
+    kinds = ("library", "templates")
+    if ":" in name:
+        k, name = name.split(":", 1)
+        kinds = (k,)
+    for k in kinds:
+        d = TEMPLATES / k / name
+        if (d / "form.json").exists():
+            return d
+    # bare leaf name: library/system-maintenance/software-review answers to "software-review"
+    hits = [d for k in kinds for rel, d in forms(k) if rel.split("/")[-1] == name]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        die(f"{name!r} is ambiguous: " + ", ".join(str(h.relative_to(TEMPLATES)) for h in hits))
+    die(f"no template {name!r} in {TEMPLATES} (try: feedback-panel templates)")
+
+
+def template_ref(tdir):
+    kind, rel = str(tdir.relative_to(TEMPLATES)).split("/", 1)
+    return f"{kind}:{rel}"
+
+
+def fill(s, ctx):
+    return re.sub(r"\{(\w+)\}", lambda m: str(ctx.get(m.group(1), m.group(0))), s) if isinstance(s, str) else s
+
+
+def apply_template(items, tdir):
+    form = read_json(tdir / "form.json")
+    ctx = {"host": socket.gethostname(), "date": f"{dt.date.today():%Y-%m-%d}"}
+    for k in FORM_KEYS:
+        if k not in form:
+            continue
+        # The template decides how the form answers; wording in the items file only wins
+        # for title/instructions/submit_hint.
+        if k in ("title", "instructions", "submit_hint", "note_placeholder") and k in items:
+            continue
+        items[k] = fill(form[k], ctx)
+    if form.get("input") in ("choice", "text"):
+        items.pop("mark_label", None)
+    items["_template"] = template_ref(tdir)
+    items["_template_form"] = form
+    return form
+
+
+# ---------------------------------------------------------------- server
+
+def server_alive(sess):
+    info = read_json(sess / "server.json")
+    if not info:
+        return None
+    try:
+        os.kill(info["pid"], 0)
+    except (ProcessLookupError, PermissionError):
+        return None
+    try:
+        with socket.create_connection(("127.0.0.1", info["port"]), timeout=1):
+            return info
+    except OSError:
+        return None
+
+
+def free_port(preferred=0):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", preferred))
+    except OSError:
+        s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def open_browser(url):
+    for cmd in (["xdg-open", url], ["open", url]):
+        if shutil.which(cmd[0]):
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+    return False
+
+
+def make_handler(sess):
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *a):
+            with open(sess / "server.log", "a") as f:
+                f.write(f"{now()} {fmt % a}\n")
+
+        def send(self, code, body, ctype="application/json"):
+            if isinstance(body, (dict, list)):
+                body = json.dumps(body, ensure_ascii=False)
+            if isinstance(body, str):
+                body = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", f"{ctype}; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path in ("/", "/index.html"):
+                page = sess / "page.html" if (sess / "page.html").exists() else PANEL_HTML
+                return self.send(200, page.read_bytes(), "text/html")
+            if path == "/api/session":
+                items = read_json(sess / "items.json")
+                items.pop("_template_form", None)
+                if items.get("mode") == "document":
+                    return self.send(200, {"items": items, "comments": read_json(sess / "comments.json", []),
+                                           "response": read_json(sess / "response.json", {}),
+                                           "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
+                return self.send(200, {"items": items, "response": read_json(sess / "response.json", {}),
+                                       "outcomes": read_json(sess / "outcomes.json", {}), "session": sess.name})
+            if path == "/api/outcomes":
+                return self.send(200, read_json(sess / "outcomes.json", {}))
+            m = re.match(r"^/pages/(\d+)\.png$", path)
+            if m and (sess / "pages" / f"{m.group(1)}.png").exists():
+                return self.send(200, (sess / "pages" / f"{m.group(1)}.png").read_bytes(), "image/png")
+            m = re.match(r"^/audio/([A-Za-z0-9_-]+)\.(\w+)$", path)
+            if m and m.group(2) in AUDIO_EXT and (sess / "audio" / f"{m.group(1)}.{m.group(2)}").exists():
+                return self.send(200, (sess / "audio" / f"{m.group(1)}.{m.group(2)}").read_bytes(), f"audio/{m.group(2)}")
+            self.send(404, {"error": "not found"})
+
+        def do_POST(self):
+            path, _, query = self.path.partition("?")
+            # Only the page itself may write; blocks drive-by posts from other sites.
+            origin = self.headers.get("Origin")
+            if origin and not re.match(r"^http://(127\.0\.0\.1|localhost):\d+$", origin):
+                return self.send(403, {"error": "bad origin"})
+            if path == "/api/audio":
+                return self.post_audio(query)
+            if path == "/api/comments":
+                return self.post_comments()
+            if path != "/api/response":
+                return self.send(404, {"error": "not found"})
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(n) or b"{}")
+            except json.JSONDecodeError:
+                return self.send(400, {"error": "bad json"})
+            with LOCK:
+                prev = read_json(sess / "response.json", {})
+                items = read_json(sess / "items.json")
+                allowed = {it["id"]: {c["id"] for c in choices_for(items, g)} for g, it in all_items(items)}
+                entries = {}
+                for k, v in (data.get("items") or {}).items():
+                    if k not in allowed or not isinstance(v, dict):
+                        continue
+                    e = {"choice": v.get("choice") if v.get("choice") in allowed[k] else None,
+                         "note": str(v.get("note") or ""), "value": str(v.get("value") or "")}
+                    if e["choice"] or e["note"].strip() or e["value"].strip():
+                        entries[k] = e
+                submit = bool(data.get("submit"))
+                # Any edit after a submit puts the session back to draft until the next Submit,
+                # so `wait` works across repeated rounds.
+                resp = {"status": "submitted" if submit else "draft",
+                        "general_note": str(data.get("general_note") or ""),
+                        "items": entries, "updated": now(), "created": prev.get("created", now()),
+                        "submitted_at": now() if submit else prev.get("submitted_at"),
+                        "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
+                write_json(sess / "response.json", resp)
+            self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"]})
+
+        # ---- document review: voice comments pinned to a page
+        def post_audio(self, query):
+            q = dict(kv.split("=", 1) for kv in query.split("&") if "=" in kv)
+            cid, ext = q.get("id", ""), q.get("ext", "webm")
+            n = int(self.headers.get("Content-Length", 0))
+            if not CID_RE.match(cid) or ext not in AUDIO_EXT or not 0 < n <= MAX_AUDIO:
+                return self.send(400, {"error": "bad audio upload"})
+            (sess / "audio").mkdir(exist_ok=True)
+            name = f"{cid}.{ext}"
+            (sess / "audio" / name).write_bytes(self.rfile.read(n))
+            self.send(200, {"ok": True, "audio": name})
+
+        def post_comments(self):
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(n) or b"{}")
+            except json.JSONDecodeError:
+                return self.send(400, {"error": "bad json"})
+            items = read_json(sess / "items.json")
+            npages = len(items.get("pages", []))
+            with LOCK:
+                old = {c["id"]: c for c in read_json(sess / "comments.json", [])}
+                out = []
+                for c in data.get("comments") or []:
+                    cid = str(c.get("id", ""))
+                    if not CID_RE.match(cid):
+                        continue
+                    scope = c.get("scope") if c.get("scope") in ("point", "page", "document") else "point"
+                    page = c.get("page") if isinstance(c.get("page"), int) and 1 <= c["page"] <= npages else None
+                    e = {"id": cid, "scope": scope, "page": None if scope == "document" else page,
+                         "x": float(c["x"]) if scope == "point" and isinstance(c.get("x"), (int, float)) else None,
+                         "y": float(c["y"]) if scope == "point" and isinstance(c.get("y"), (int, float)) else None,
+                         "note": str(c.get("note") or ""), "created": old.get(cid, {}).get("created", now())}
+                    audio = str(c.get("audio") or "")
+                    if audio and (sess / "audio" / audio).exists() and audio.startswith(cid + "."):
+                        e["audio"] = audio
+                        e["duration_s"] = c.get("duration_s") if isinstance(c.get("duration_s"), (int, float)) else None
+                        prev = old.get(cid, {})
+                        if prev.get("audio") == audio and prev.get("transcript"):  # keep a transcript for the same take
+                            e["transcript"], e["transcript_by"] = prev["transcript"], prev.get("transcript_by")
+                    if e.get("audio") or e["note"].strip():
+                        out.append(e)
+                write_json(sess / "comments.json", out)
+                submit = bool(data.get("submit"))
+                prev = read_json(sess / "response.json", {})
+                resp = {"status": "submitted" if submit else "draft", "updated": now(),
+                        "created": prev.get("created", now()),
+                        "submitted_at": now() if submit else prev.get("submitted_at"),
+                        "rounds": prev.get("rounds", 0) + (1 if submit else 0)}
+                write_json(sess / "response.json", resp)
+            self.send(200, {"ok": True, "status": resp["status"], "updated": resp["updated"], "comments": len(out)})
+
+    return H
+
+
+def cmd_serve(a):
+    sess = resolve(a.session)
+    port = free_port(a.port or 0)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), make_handler(sess))
+    url = f"http://127.0.0.1:{port}/"
+    write_json(sess / "server.json", {"pid": os.getpid(), "port": port, "url": url, "started": now()})
+    # shutdown() from a signal handler on the serving thread deadlocks; just exit.
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    print(url, flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def start_background(sess, port=0):
+    log = open(sess / "server.log", "a")
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "serve", str(sess)] + (["--port", str(port)] if port else []),
+                     stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(50):
+        time.sleep(0.1)
+        info = server_alive(sess)
+        if info:
+            return info
+    die(f"server did not start; see {sess / 'server.log'}")
+
+
+def slugify(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40] or "panel"
+
+
+# ---------------------------------------------------------------- diagrams
+
+SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
+
+def svg_text(g):
+    return [t.text.strip() for t in g.iter(f"{{{SVG_NS}}}text") if t.text and t.text.strip()]
+
+
+def font_faces(font_dir):
+    """@font-face rules (base64) for every font in font_dir, so the page draws what dot measured."""
+    import base64
+    rules = []
+    for f in sorted(font_dir.iterdir()):
+        if f.suffix.lower() not in (".ttf", ".otf", ".woff", ".woff2"):
+            continue
+        family, weight, style = f.stem, 400, "normal"
+        if shutil.which("fc-scan"):
+            r = subprocess.run(["fc-scan", "--format", "%{family[0]}|%{weight}|%{slant}", str(f)], capture_output=True, text=True)
+            parts = r.stdout.strip().split("|")
+            if r.returncode == 0 and len(parts) == 3 and parts[0]:
+                family = parts[0]
+                fcw = float(parts[1] or 80)  # fontconfig: 80 regular, 180 semibold, 200 bold
+                weight = 700 if fcw >= 195 else 600 if fcw >= 175 else 500 if fcw >= 95 else 300 if fcw < 75 else 400
+                style = "italic" if parts[2] not in ("", "0") else "normal"
+        fmt = {".ttf": "truetype", ".otf": "opentype", ".woff": "woff", ".woff2": "woff2"}[f.suffix.lower()]
+        data = base64.b64encode(f.read_bytes()).decode()
+        rules.append(f'@font-face {{ font-family: "{family}"; font-weight: {weight}; font-style: {style}; '
+                     f'src: url(data:font/{f.suffix[1:].lower()};base64,{data}) format("{fmt}"); }}')
+    return "\n".join(rules)
+
+
+def render_diagram(src, font_dir=None, engine="dot"):
+    """Lay out one Graphviz file; return (svg_root, json0) from a single run so both agree."""
+    import tempfile
+    import xml.etree.ElementTree as ET
+    if not shutil.which(engine):
+        die(f"Graphviz '{engine}' not found; install graphviz")
+    env = dict(os.environ)
+    with tempfile.TemporaryDirectory() as tmp:
+        if font_dir:
+            conf = Path(tmp) / "fonts.conf"
+            conf.write_text(f"<fontconfig><dir>{font_dir}</dir><include ignore_missing=\"yes\">/etc/fonts/fonts.conf</include>"
+                            f"<cachedir>{tmp}/fc</cachedir></fontconfig>")
+            env["FONTCONFIG_FILE"] = str(conf)
+        svg_p, js_p = Path(tmp) / "d.svg", Path(tmp) / "d.json"
+        r = subprocess.run([engine, "-Tsvg", "-o", str(svg_p), "-Tjson0", "-o", str(js_p), str(src)],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            die(f"{engine} failed on {src}:\n{r.stderr.strip()}")
+        ET.register_namespace("", SVG_NS)
+        ET.register_namespace("xlink", XLINK_NS)
+        return ET.parse(svg_p).getroot(), json.loads(js_p.read_text())
+
+
+def diagram_items(src, slug, name, font_dir=None, skip=()):
+    """One diagram -> (diagram dict for the page, groups of items: components, connections, zones)."""
+    import xml.etree.ElementTree as ET
+    root, js = render_diagram(src, font_dir)
+    objs = js.get("objects", [])
+    clusters = [o for o in objs if o.get("name", "").startswith("cluster")]
+
+    def members(c):  # every node in a cluster, nested ones included
+        out = set(c.get("nodes", []))
+        for sg in c.get("subgraphs", []):
+            if objs[sg].get("name", "").startswith("cluster"):
+                out |= members(objs[sg])
+        return out
+    cmembers = {c["name"]: members(c) for c in clusters}
+    cparent = {}
+    for c in clusters:  # innermost enclosing cluster of each cluster
+        outer = [o for o in clusters if o is not c and cmembers[c["name"]] < cmembers[o["name"]]]
+        if outer:
+            cparent[c["name"]] = min(outer, key=lambda o: len(cmembers[o["name"]]))["name"]
+    gv_name = {o["_gvid"]: o["name"] for o in objs}
+    zone_of = {}
+    for gvid in gv_name:
+        inside = [c for c in clusters if gvid in cmembers[c["name"]]]
+        if inside:
+            zone_of[gv_name[gvid]] = min(inside, key=lambda c: len(cmembers[c["name"]]))["name"]
+
+    pre = f"{slug}:"
+    labels, comp, conn, zones, zlabel = {}, [], [], [], {}
+    # clusters first so node rows can name their zone by label
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        if g.get("class") == "cluster":
+            title = g.findtext(f"{{{SVG_NS}}}title", "")
+            zlabel[title] = " ".join(svg_text(g)) or title.removeprefix("cluster_").removeprefix("cluster")
+    seen_edges = {}
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        cls = g.get("class")
+        title = g.findtext(f"{{{SVG_NS}}}title", "")
+        if cls == "node":
+            if title in skip:
+                continue
+            txt = svg_text(g)
+            iid = f"{pre}node:{title}"
+            labels[title] = txt[0] if txt else title
+            meta = {"diagram": name}
+            if title in zone_of:
+                meta["zone"] = zlabel.get(zone_of[title], zone_of[title])
+            comp.append({"id": iid, "label": labels[title], "detail": " · ".join(txt[1:]), "kind": "node",
+                         "diagram": slug, "ref": title, "zone": f"{pre}zone:{zone_of[title]}" if title in zone_of else None,
+                         "meta": meta})
+            g.set("data-fp", iid)
+        elif cls == "cluster":
+            iid = f"{pre}zone:{title}"
+            meta = {"diagram": name}
+            if title in cparent:
+                meta["inside"] = zlabel.get(cparent[title], cparent[title])
+            zones.append({"id": iid, "label": zlabel[title], "kind": "zone", "diagram": slug, "ref": title,
+                          "zone": f"{pre}zone:{cparent[title]}" if title in cparent else None, "meta": meta})
+            g.set("data-fp", iid)
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        if g.get("class") != "edge":
+            continue
+        title = g.findtext(f"{{{SVG_NS}}}title", "")
+        m = re.match(r"^(.*?)(->|--)(.*)$", title)
+        if not m:
+            continue
+        a, arrow, b = m.group(1).split(":")[0], m.group(2), m.group(3).split(":")[0]
+        if a in skip or b in skip:
+            continue
+        seen_edges[title] = seen_edges.get(title, 0) + 1
+        iid = f"{pre}edge:{a}{arrow}{b}" + (f"#{seen_edges[title]}" if seen_edges[title] > 1 else "")
+        txt = svg_text(g)
+        conn.append({"id": iid, "label": f"{labels.get(a, a)} {'→' if arrow == '->' else '—'} {labels.get(b, b)}",
+                     "detail": " · ".join(txt), "kind": "edge", "diagram": slug, "ref": title,
+                     "from": f"{pre}node:{a}", "to": f"{pre}node:{b}", "meta": {"diagram": name, "connection": " · ".join(txt)} if txt else {"diagram": name}})
+        g.set("data-fp", iid)
+    if font_dir:
+        style = ET.Element(f"{{{SVG_NS}}}style")
+        style.text = font_faces(font_dir)
+        root.insert(0, style)
+    for attr in ("width", "height"):  # the page sizes it; keep the natural size for fit
+        root.set(f"data-{attr}", root.get(attr, ""))
+    svg = ET.tostring(root, encoding="unicode")
+    groups = [{"name": f"{name}: components", "items": comp},
+              {"name": f"{name}: connections", "items": conn, "collapsed": True},
+              {"name": f"{name}: zones", "items": zones, "collapsed": True}]
+    return {"id": slug, "name": name, "source": str(Path(src).resolve()), "svg": svg}, [g for g in groups if g["items"]]
+
+
+def cmd_diagram(a):
+    names = a.label or []
+    diagrams, groups = [], []
+    font_dir = Path(a.font_dir).expanduser().resolve() if a.font_dir else None
+    for i, f in enumerate(a.files):
+        src = Path(f).expanduser()
+        if not src.exists():
+            die(f"{src} not found")
+        name = names[i] if i < len(names) else re.sub(r"[-_]+", " ", src.stem).strip().title()
+        d, gs = diagram_items(src, slugify(src.stem), name, font_dir, set(a.skip))
+        diagrams.append(d)
+        groups += gs
+    # No default title: the template's title should win unless --title is given.
+    items = ({"title": a.title} if a.title else {}) | {"diagrams": diagrams, "groups": groups}
+    n = validate(items)
+    if a.out:
+        write_json(Path(a.out).expanduser(), items)
+        print(json.dumps({"out": str(Path(a.out).expanduser()), "diagrams": [d["name"] for d in diagrams], "items": n,
+                          "by_kind": {k: sum(1 for _, it in all_items(items) if it["kind"] == k) for k in ("node", "edge", "zone")}}, indent=2))
+    else:
+        print(json.dumps(items, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------- commands
+
+# ---------------------------------------------------------------- document review
+
+def pdf_layout(pdf):
+    """Line and block rectangles per page, in PDF points, from pdftotext -bbox-layout.
+    Text is NOT taken from here: for right-to-left scripts the bbox words come out in visual
+    order. Anchor text is cropped out with plain pdftotext instead (anchor_text)."""
+    import xml.etree.ElementTree as ET
+    raw = subprocess.run(["pdftotext", "-bbox-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
+    raw = re.sub(r"<!DOCTYPE[^>]*>", "", raw)
+    root = ET.fromstring(raw)
+    ns = {"h": "http://www.w3.org/1999/xhtml"}
+    pages = []
+    box = lambda e: [round(float(e.get(k)), 2) for k in ("xMin", "yMin", "xMax", "yMax")]
+    for pg in root.iter("{http://www.w3.org/1999/xhtml}page"):
+        blocks = []
+        for b in pg.iter("{http://www.w3.org/1999/xhtml}block"):
+            blocks.append({"box": box(b), "lines": [box(l) for l in b.findall("h:line", ns)]})
+        pages.append({"w": float(pg.get("width")), "h": float(pg.get("height")), "blocks": blocks})
+    return pages
+
+
+def crop_text(pdf, page, rect):
+    x0, y0, x1, y1 = rect
+    r = subprocess.run(["pdftotext", "-f", str(page), "-l", str(page), "-r", "72", "-x", str(int(x0) - 1),
+                        "-y", str(int(y0) - 1), "-W", str(int(x1 - x0) + 3), "-H", str(int(y1 - y0) + 3),
+                        str(pdf), "-"], capture_output=True, text=True)
+    text = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", r.stdout)  # bidi controls from RTL runs
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def anchor_text(sess, c):
+    """The line and the paragraph (block) nearest a pinned comment, in reading order."""
+    if c.get("scope") != "point" or c.get("page") is None:
+        return {}
+    layout = read_json(sess / "layout.json") or []
+    if c["page"] > len(layout):
+        return {}
+    pg = layout[c["page"] - 1]
+    px, py = c["x"] * pg["w"], c["y"] * pg["h"]
+    best = None
+    for b in pg["blocks"]:
+        for l in b["lines"]:
+            dy = 0 if l[1] <= py <= l[3] else min(abs(py - l[1]), abs(py - l[3]))
+            dx = 0 if l[0] <= px <= l[2] else min(abs(px - l[0]), abs(px - l[2]))
+            d = dy + 0.1 * dx  # a pin sits on or beside a line; the vertical distance decides
+            if best is None or d < best[0]:
+                best = (d, l, b, dy)
+    if not best or best[3] > 30:
+        return {"near": None}
+    pdf = sess / "document.pdf"
+    return {"line": crop_text(pdf, c["page"], best[1]), "paragraph": crop_text(pdf, c["page"], best[2]["box"])[:600]}
+
+
+def cmd_document(a):
+    src = Path(a.file).expanduser().resolve()
+    if not src.exists():
+        die(f"{src} not found")
+    if src.suffix.lower() != ".pdf":
+        die("document review takes a PDF (export other formats to PDF first)")
+    for tool in ("pdftoppm", "pdftotext"):
+        if not shutil.which(tool):
+            die(f"{tool} not found (install poppler-utils)")
+    slug = slugify(a.name or src.stem)
+    sess = HOME / f"{dt.datetime.now():%Y-%m-%d-%H%M%S}-{slug}"
+    (sess / "pages").mkdir(parents=True)
+    shutil.copy(src, sess / "document.pdf")
+    subprocess.run(["pdftoppm", "-r", str(a.dpi), "-png", str(src), str(sess / "pages" / "p")], check=True)
+    pngs = sorted((sess / "pages").glob("p-*.png"), key=lambda p: int(p.stem.split("-")[-1]))
+    for i, p in enumerate(pngs, 1):
+        p.rename(sess / "pages" / f"{i}.png")
+    layout = pdf_layout(src)
+    write_json(sess / "layout.json", layout)
+    items = {"mode": "document", "title": a.title or src.stem, "source": str(src),
+             "instructions": a.instructions or "Click anywhere on a page to pin a voice comment there, or use "
+             "'Whole document' / 'This page'. Recording starts at once; click Stop when you're done. "
+             "Type instead of talking if you prefer. Press Submit when you've finished a round.",
+             "pages": [{"n": i, "img": f"/pages/{i}.png", "w": pg["w"], "h": pg["h"]} for i, pg in enumerate(layout, 1)],
+             "input": "document", "groups": []}
+    write_json(sess / "items.json", items)
+    write_json(sess / "comments.json", [])
+    shutil.copy(DOCUMENT_HTML, sess / "page.html")
+    info = start_background(sess, a.port)
+    opened = (not a.no_open) and open_browser(info["url"])
+    print(json.dumps({"session": str(sess), "url": info["url"], "pages": len(layout), "mode": "document",
+                      "browser_opened": bool(opened)}, indent=2))
+
+
+def asr_config():
+    """Transcription backend: any OpenAI-compatible /audio/transcriptions endpoint (hosted Whisper,
+    Groq, a self-hosted faster-whisper / speaches server, a local app). Set in the environment or in
+    $FEEDBACK_HOME/config.json {"asr": {"url", "key_env", "model", "language", "prompt"}}."""
+    cfg = (read_json(HOME.parent / "config.json", {}) or {}).get("asr", {})
+    url = os.environ.get("FEEDBACK_ASR_URL") or cfg.get("url")
+    key = os.environ.get("FEEDBACK_ASR_KEY") or (os.environ.get(cfg["key_env"]) if cfg.get("key_env") else None)
+    return {"url": url, "key": key, "model": os.environ.get("FEEDBACK_ASR_MODEL") or cfg.get("model", "whisper-1"),
+            "language": os.environ.get("FEEDBACK_ASR_LANGUAGE") or cfg.get("language"),
+            "prompt": cfg.get("prompt")}
+
+
+def transcribe_file(path, cfg):
+    import urllib.request
+    import uuid
+    boundary = uuid.uuid4().hex
+    fields = {"model": cfg["model"], "response_format": "json"}
+    if cfg.get("language"):
+        fields["language"] = cfg["language"]
+    if cfg.get("prompt"):
+        fields["prompt"] = cfg["prompt"]
+    body = b""
+    for k, v in fields.items():
+        body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{path.name}\"\r\n"
+             f"Content-Type: application/octet-stream\r\n\r\n").encode() + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    url = cfg["url"].rstrip("/")
+    if not url.endswith("/audio/transcriptions"):
+        url += "/audio/transcriptions"
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    if cfg.get("key"):
+        req.add_header("Authorization", f"Bearer {cfg['key']}")
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return json.loads(r.read()).get("text", "").strip()
+
+
+def cmd_transcribe(a):
+    sess = resolve(a.session)
+    comments = read_json(sess / "comments.json", [])
+    todo = [c for c in comments if c.get("audio") and (a.all or not c.get("transcript"))]
+    if a.list:
+        print(json.dumps([{"id": c["id"], "audio": str(sess / "audio" / c["audio"])} for c in todo], indent=2))
+        return
+    if not todo:
+        print("nothing to transcribe")
+        return
+    cfg = asr_config()
+    if not cfg["url"]:
+        die("no transcription backend: set FEEDBACK_ASR_URL (OpenAI-compatible) or asr.url in config.json; "
+            "or run `transcribe --list` and store results with `set-transcript`")
+    done = 0
+    for c in todo:
+        try:
+            c["transcript"] = transcribe_file(sess / "audio" / c["audio"], cfg)
+            c["transcript_by"] = f"{cfg['model']} @ {cfg['url']}"
+            done += 1
+        except Exception as e:  # keep going; report the failures
+            print(f"{c['id']}: transcription failed: {e}", file=sys.stderr)
+    with LOCK:
+        cur = {c["id"]: c for c in read_json(sess / "comments.json", [])}
+        for c in todo:
+            if c["id"] in cur and cur[c["id"]].get("audio") == c["audio"] and c.get("transcript"):
+                cur[c["id"]]["transcript"], cur[c["id"]]["transcript_by"] = c["transcript"], c["transcript_by"]
+        write_json(sess / "comments.json", list(cur.values()))
+    print(f"transcribed {done}/{len(todo)}")
+
+
+def cmd_set_transcript(a):
+    sess = resolve(a.session)
+    text = Path(a.file).read_text().strip() if a.file else " ".join(a.text).strip()
+    with LOCK:
+        comments = read_json(sess / "comments.json", [])
+        for c in comments:
+            if c["id"] == a.id:
+                c["transcript"], c["transcript_by"] = text, a.by or "external"
+                break
+        else:
+            die(f"unknown comment id {a.id!r}")
+        write_json(sess / "comments.json", comments)
+    print(f"{a.id}: transcript stored")
+
+
+def document_result(sess):
+    items = read_json(sess / "items.json")
+    resp = read_json(sess / "response.json", {})
+    oc = read_json(sess / "outcomes.json", {})
+    order = {"document": 0, "page": 1, "point": 2}
+    comments = sorted(read_json(sess / "comments.json", []),
+                      key=lambda c: (c.get("page") or 0, order[c["scope"]], c.get("y") or 0))
+    rows = []
+    for i, c in enumerate(comments, 1):
+        rows.append({"n": i, "id": c["id"], "scope": c["scope"], "page": c.get("page"),
+                     "at": None if c.get("x") is None else {"x": round(c["x"], 3), "y": round(c["y"], 3)},
+                     "anchor": anchor_text(sess, c), "note": c.get("note", ""),
+                     "transcript": c.get("transcript"), "audio": str(sess / "audio" / c["audio"]) if c.get("audio") else None,
+                     "duration_s": c.get("duration_s"), "outcome": oc.get(c["id"])})
+    return {"session": str(sess), "mode": "document", "title": items.get("title"), "source": items.get("source"),
+            "status": resp.get("status", "untouched"), "rounds": resp.get("rounds", 0), "comments": rows,
+            "untranscribed": sum(1 for r in rows if r["audio"] and not r["transcript"])}
+
+
+def print_document_result(out):
+    print(f"# Feedback on {out['title']}  ({out['status']}, round {out['rounds']}, {len(out['comments'])} comments"
+          + (f", {out['untranscribed']} not yet transcribed" if out["untranscribed"] else "") + ")")
+    print(f"Source: {out['source']}")
+    for r in out["comments"]:
+        where = "Whole document" if r["scope"] == "document" else f"Page {r['page']}" + ("" if r["scope"] == "page" else " (pinned)")
+        print(f"\n## {r['n']}. {where}  [{r['id']}]")
+        an = r.get("anchor") or {}
+        if an.get("line"):
+            print(f"> at: \"{an['line']}\"")
+            if an.get("paragraph") and an["paragraph"] != an["line"]:
+                print(f"> in: \"{an['paragraph'][:300]}\"")
+        if r["transcript"]:
+            print(f"\nSaid: {r['transcript']}")
+        elif r["audio"]:
+            print(f"\nSaid: (not transcribed yet: {r['audio']})")
+        if r["note"]:
+            print(f"\nWrote: {r['note']}")
+        if r.get("outcome"):
+            print(f"\nOutcome: {r['outcome']['state']} {r['outcome'].get('text', '')}")
+
+
+def cmd_new(a):
+    src = Path(a.items).expanduser()
+    items = read_json(src)
+    if items is None:
+        die(f"{src} not found")
+    n = validate(items)
+    tdir = find_template(a.template) if a.template else None
+    if tdir:
+        apply_template(items, tdir)
+    normalize(items)
+    if a.suggest:
+        sugg = read_json(Path(a.suggest).expanduser())
+        if sugg is None:
+            die(f"{a.suggest} not found")
+        ids = {it["id"]: (g, it) for g, it in all_items(items)}
+        unknown = [k for k in sugg if k not in ids]
+        if unknown:
+            print(f"feedback-panel: ignoring {len(unknown)} unknown suggestion ids: {', '.join(unknown[:5])}", file=sys.stderr)
+        for k, s in sugg.items():
+            if k not in ids:
+                continue
+            g, it = ids[k]
+            if isinstance(s, dict):  # {"choice": "keep", "reason": "..."}
+                it["suggested"] = s.get("reason") or True
+                if s.get("choice") in {c["id"] for c in choices_for(items, g)}:
+                    it["suggested_choice"] = s["choice"]
+            else:
+                it["suggested"] = s or True
+    slug = slugify(a.name or (tdir.name if tdir else items.get("title", src.stem)))
+    sess = HOME / f"{dt.datetime.now():%Y-%m-%d-%H%M%S}-{slug}"
+    sess.mkdir(parents=True)
+    page = (items.get("_template_form") or {}).get("page")
+    if page and (tdir / page).exists():
+        shutil.copy(tdir / page, sess / "page.html")
+    elif items.get("diagrams"):
+        shutil.copy(DIAGRAM_HTML, sess / "page.html")
+    write_json(sess / "items.json", items)
+    info = start_background(sess, a.port)
+    opened = (not a.no_open) and open_browser(info["url"])
+    print(json.dumps({"session": str(sess), "url": info["url"], "items": n, "groups": len(items["groups"]),
+                      "input": items["input"], "choices": [c["label"] for c in items.get("choices", [])],
+                      "template": items.get("_template"), "browser_opened": bool(opened)}, indent=2))
+
+
+def legacy(entry):
+    """Sessions created before choices existed stored {'marked': bool}."""
+    if "choice" not in entry and entry.get("marked"):
+        entry = dict(entry, choice="marked")
+    return entry
+
+
+def build_result(sess):
+    items = read_json(sess / "items.json")
+    normalize(items)
+    resp = read_json(sess / "response.json", {})
+    answers = {k: legacy(v) for k, v in resp.get("items", {}).items()}
+    labels = {c["id"]: c["label"] for g in items["groups"] for c in choices_for(items, g)}
+    out = {"session": str(sess), "title": items.get("title", sess.name), "status": resp.get("status", "untouched"),
+           "input": items["input"], "rounds": resp.get("rounds", 0), "general_note": resp.get("general_note", ""),
+           "choices": labels, "by_choice": {cid: [] for cid in labels}, "answers": [], "notes_only": [],
+           "unanswered": 0, "total": 0}
+    for g, it in all_items(items):
+        out["total"] += 1
+        r = answers.get(it["id"], {})
+        row = {"id": it["id"], "label": it["label"], "group": g.get("name"), "note": r.get("note", ""),
+               "meta": it.get("meta", {})}
+        if items["input"] == "text":
+            if (r.get("value") or "").strip():
+                out["answers"].append(dict(row, answer=r["value"]))
+            else:
+                out["unanswered"] += 1
+            continue
+        if r.get("choice"):
+            out["by_choice"].setdefault(r["choice"], []).append(row)
+        else:
+            out["unanswered"] += 1
+            if (r.get("note") or "").strip():
+                out["notes_only"].append(row)
+    out["ticked"] = [r for rows in out["by_choice"].values() for r in rows]  # compat: everything answered
+    return items, out
+
+
+def cmd_status(a):
+    sess = resolve(a.session)
+    if (read_json(sess / "items.json") or {}).get("mode") == "document":
+        out = document_result(sess)
+        alive = server_alive(sess)
+        print(f"{sess.name}: {out['status']} | {len(out['comments'])} comments, {out['untranscribed']} untranscribed | "
+              f"round {out['rounds']} | server {'up ' + alive['url'] if alive else 'down'}")
+        return
+    items, out = build_result(sess)
+    alive = server_alive(sess)
+    counts = ", ".join(f"{out['choices'][c]} {len(rows)}" for c, rows in out["by_choice"].items() if rows) or \
+        (f"{len(out['answers'])} answered" if out["input"] == "text" else "nothing chosen")
+    resp = read_json(sess / "response.json", {})
+    print(f"{sess.name}: {out['status']} | {counts} | {out['unanswered']}/{out['total']} unanswered | "
+          f"updated {resp.get('updated', '-')} | server {'up ' + alive['url'] if alive else 'down'}")
+
+
+def cmd_result(a):
+    sess = resolve(a.session)
+    if (read_json(sess / "items.json") or {}).get("mode") == "document":
+        out = document_result(sess)
+        if a.new:
+            out["comments"] = [r for r in out["comments"] if (r.get("outcome") or {}).get("state") in (None, "failed")]
+        print(json.dumps(out, indent=2, ensure_ascii=False)) if a.json else print_document_result(out)
+        return
+    items, out = build_result(sess)
+    if a.new:
+        # only what still needs acting on: no outcome yet, or the last attempt failed
+        oc = read_json(sess / "outcomes.json", {})
+        pending = lambda r: oc.get(r["id"], {}).get("state") in (None, "failed")
+        out["by_choice"] = {c: [r for r in rows if pending(r)] for c, rows in out["by_choice"].items()}
+        for k in ("answers", "notes_only"):
+            if k in out:
+                out[k] = [r for r in out[k] if pending(r)]
+        out["new_only"] = True
+    if a.json:
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return
+    print(f"# {out['title']}  ({out['status']}, round {out['rounds']}, {out['unanswered']}/{out['total']} unanswered)")
+    if out["general_note"]:
+        print(f"\nGeneral note: {out['general_note']}")
+
+    def block(head, rows, extra=None):
+        if not rows:
+            return
+        print(f"\n## {head} ({len(rows)})")
+        grp = None
+        for r in rows:
+            if r["group"] != grp:
+                grp = r["group"]
+                print(f"\n### {grp}")
+            lab = r["label"] if r["label"] == r["id"] else f"{r['label']}  [{r['id']}]"
+            tail = f"  — {r['note']}" if r["note"] else ""
+            print(f"- {lab}{tail}")
+            if extra:
+                print(f"  > {extra(r)}")
+
+    if out["input"] == "text":
+        block("Answers", out["answers"], lambda r: r["answer"].replace("\n", "\n  > "))
+    for cid, rows in out["by_choice"].items():
+        block(out["choices"][cid], rows)
+    block("Notes on unanswered items", out["notes_only"])
+
+
+def cmd_wait(a):
+    sess = resolve(a.session)
+    t0 = time.time()
+    start_round = read_json(sess / "response.json", {}).get("rounds") or 0
+    while True:
+        resp = read_json(sess / "response.json", {})
+        fresh = (resp.get("rounds") or 0) > start_round if a.next else True
+        if resp.get("status") == "submitted" and fresh:
+            print(f"submitted {resp.get('submitted_at')} (round {resp.get('rounds')})")
+            return
+        if a.timeout and time.time() - t0 > a.timeout:
+            die("timed out waiting for submit", 2)
+        time.sleep(2)
+
+
+def cmd_outcome(a):
+    sess = resolve(a.session)
+    items = read_json(sess / "items.json")
+    valid = {c["id"] for c in read_json(sess / "comments.json", [])} if items.get("mode") == "document" \
+        else {it["id"] for _, it in all_items(items)}
+    if a.id not in valid:
+        die(f"unknown item id {a.id!r}")
+    with LOCK:
+        oc = read_json(sess / "outcomes.json", {})
+        oc[a.id] = {"state": a.state, "text": " ".join(a.text), "at": now()}
+        write_json(sess / "outcomes.json", oc)
+    print(f"{a.id}: {a.state}")
+
+
+def cmd_open(a):
+    sess = resolve(a.session)
+    info = server_alive(sess) or start_background(sess)
+    open_browser(info["url"])
+    print(info["url"])
+
+
+def cmd_stop(a):
+    sess = resolve(a.session)
+    info = server_alive(sess)
+    if not info:
+        print("not running")
+        return
+    os.kill(info["pid"], signal.SIGTERM)
+    print(f"stopped {info['url']}")
+
+
+def cmd_list(a):
+    for d in sessions():
+        resp = read_json(d / "response.json", {})
+        tpl = (read_json(d / "items.json") or {}).get("_template", "")
+        print(f"{d.name:55} {resp.get('status', 'untouched'):10} {tpl:28} {'up' if server_alive(d) else ''}")
+
+
+def cmd_templates(a):
+    if not TEMPLATES.exists():
+        die(f"templates repo not found at {TEMPLATES} (gh repo clone danielrosehill/Feedback-Panel-Templates {TEMPLATES})")
+    for kind in ("templates", "library"):
+        fl = forms(kind)
+        if not fl:
+            continue
+        print(f"## {kind}")
+        for rel, t in fl:
+            f = read_json(t / "form.json")
+            opts = " / ".join(c["label"] for c in f.get("choices", [])) or f.get("input", "check")
+            print(f"  {rel:40} {opts:34} {f.get('description', '')}")
+
+
+def cmd_template(a):
+    t = find_template(a.name)
+    print(f"# {t}\n")
+    print((t / "form.json").read_text())
+    if (t / "recipe.md").exists():
+        print((t / "recipe.md").read_text())
+
+
+def cmd_save(a):
+    sess = resolve(a.session)
+    items = read_json(sess / "items.json")
+    dest = TEMPLATES / "library" / "/".join(slugify(part) for part in a.name.split("/") if part)
+    if (dest / "form.json").exists() and not a.force:
+        die(f"{dest} exists; pass --force to update it")
+    dest.mkdir(parents=True, exist_ok=True)
+    base = items.get("_template_form") or {}
+    form = {"name": str(dest.relative_to(TEMPLATES / "library")), "description": a.description or base.get("description") or items.get("title", "")}
+    ctx = {"host": socket.gethostname(), "date": f"{dt.date.today():%Y-%m-%d}"}
+    for k in FORM_KEYS:
+        v = items.get(k, base.get(k))
+        # Keep the template's {host}/{date} placeholders unless Claude customised the value.
+        if k in base and fill(base[k], ctx) == v:
+            v = base[k]
+        if v is not None and not (k == "choices" and items.get("input") == "check"):
+            form[k] = v
+    if a.generator:
+        form["generator"] = a.generator
+    elif base.get("generator"):
+        form["generator"] = base["generator"]
+    if (sess / "page.html").exists() and not items.get("diagrams"):
+        shutil.copy(sess / "page.html", dest / "page.html")
+        form["page"] = "page.html"
+    form["based_on"] = items.get("_template", "")
+    form["saved"] = f"{dt.date.today():%Y-%m-%d}"
+    write_json(dest / "form.json", form)
+    write_json(dest / "example-items.json", {k: v for k, v in items.items() if not k.startswith("_")} | {
+        "groups": [dict(g, items=g["items"][:3]) for g in items["groups"]]}
+        | ({"diagrams": [dict(d, svg="(generated by: feedback-panel diagram)") for d in items["diagrams"]]} if items.get("diagrams") else {}))
+    recipe = dest / "recipe.md"
+    if not recipe.exists():
+        recipe.write_text(f"""# {dest.name}
+
+{form['description']}
+
+## When to use
+
+TODO: the request that should bring this form back.
+
+## Build the items
+
+{('Run: `' + form['generator'] + '` (writes items.json to $OUT).') if form.get('generator') else 'TODO: how to gather the items (commands, sources). One group per kind.'}
+
+## Suggestions
+
+TODO: what Claude tags and why (factual reasons only, never pre-answered).
+
+## Acting on the answers
+
+TODO: what each choice means in practice, commands to run, where to record the outcome.
+""")
+    print(dest)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="feedback", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = p.add_subparsers(dest="cmd", required=True)
+    x = sp.add_parser("new"); x.add_argument("items"); x.add_argument("--template"); x.add_argument("--name")
+    x.add_argument("--no-open", action="store_true"); x.add_argument("--port", type=int, default=0)
+    x.add_argument("--suggest", help="JSON {item_id: reason | {choice, reason}} merged in as Claude's suggestions"); x.set_defaults(f=cmd_new)
+    x = sp.add_parser("diagram", help="Graphviz file(s) -> items.json for a clickable diagram review")
+    x.add_argument("files", nargs="+"); x.add_argument("-o", "--out"); x.add_argument("--title")
+    x.add_argument("--label", action="append", help="display name per file, in order (default: from the file name)")
+    x.add_argument("--font-dir", help="fonts the diagram uses: dot measures with them and the page embeds them")
+    x.add_argument("--skip", action="append", default=["legend"], help="node names to leave out (default: legend)")
+    x.set_defaults(f=cmd_diagram)
+    x = sp.add_parser("document", help="PDF -> a page you review by pinning voice (or typed) comments")
+    x.add_argument("file"); x.add_argument("--title"); x.add_argument("--name"); x.add_argument("--instructions")
+    x.add_argument("--dpi", type=int, default=110); x.add_argument("--no-open", action="store_true")
+    x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_document)
+    x = sp.add_parser("transcribe", help="transcribe a document session's voice comments (OpenAI-compatible ASR)")
+    x.add_argument("session", nargs="?"); x.add_argument("--all", action="store_true", help="redo existing transcripts")
+    x.add_argument("--list", action="store_true", help="print audio files still to transcribe, as JSON"); x.set_defaults(f=cmd_transcribe)
+    x = sp.add_parser("set-transcript", help="store a transcript made elsewhere")
+    x.add_argument("session"); x.add_argument("id"); x.add_argument("text", nargs="*"); x.add_argument("-f", "--file")
+    x.add_argument("--by"); x.set_defaults(f=cmd_set_transcript)
+    x = sp.add_parser("serve"); x.add_argument("session"); x.add_argument("--port", type=int, default=0); x.set_defaults(f=cmd_serve)
+    for name, f in (("status", cmd_status), ("open", cmd_open), ("stop", cmd_stop)):
+        x = sp.add_parser(name); x.add_argument("session", nargs="?"); x.set_defaults(f=f)
+    x = sp.add_parser("result"); x.add_argument("session", nargs="?"); x.add_argument("--json", action="store_true"); x.add_argument("--new", action="store_true", help="only items with no outcome yet (or failed)"); x.set_defaults(f=cmd_result)
+    x = sp.add_parser("wait"); x.add_argument("session", nargs="?"); x.add_argument("--timeout", type=int, default=0); x.add_argument("--next", action="store_true", help="wait for a Submit newer than the current round"); x.set_defaults(f=cmd_wait)
+    x = sp.add_parser("outcome"); x.add_argument("session"); x.add_argument("id"); x.add_argument("state", choices=["done", "skipped", "failed"]); x.add_argument("text", nargs="*"); x.set_defaults(f=cmd_outcome)
+    x = sp.add_parser("list"); x.set_defaults(f=cmd_list)
+    x = sp.add_parser("templates"); x.set_defaults(f=cmd_templates)
+    x = sp.add_parser("template"); x.add_argument("name"); x.set_defaults(f=cmd_template)
+    x = sp.add_parser("save"); x.add_argument("session"); x.add_argument("name"); x.add_argument("--generator")
+    x.add_argument("--description"); x.add_argument("--force", action="store_true"); x.set_defaults(f=cmd_save)
+    a = p.parse_args()
+    a.f(a)
+
+
+if __name__ == "__main__":
+    main()

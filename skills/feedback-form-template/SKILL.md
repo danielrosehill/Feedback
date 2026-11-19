@@ -1,6 +1,6 @@
 ---
 name: feedback-form-template
-description: Spin up a feedback form from a ready-made template instead of designing one - Remove / Keep for now / Ask me, Keep / Archive / Delete, Approve / Revise / Reject, Now / Soon / Later / Never, Yes / No / Not sure, 1-5 rating, single tick box, or free-text questions - or add a new reusable template when none fits. Use when Daniel says "I need a feedback form for X with these responses", "give me a form where I can mark each one as ...", "ask me all these questions in a form", or wants a new kind of form available for next time.
+description: Spin up a feedback form from a ready-made template instead of designing one - Remove / Keep for now / Ask me, Keep / Archive / Delete, Approve / Revise / Reject, Now / Soon / Later / Never, Yes / No / Not sure, 1-5 rating, single tick box, or free-text questions - or add a new reusable template when none fits. Use when the user says "I need a feedback form for X with these responses", "give me a form where I can mark each one as ...", "ask me all these questions in a form", or wants a new kind of form available for next time.
 ---
 
 # Feedback form from a template
@@ -14,7 +14,7 @@ Running them is covered by skill `feedback-panel`.
 
 ## Recipe
 
-1. **Match the answers Daniel asked for to a template.** Run `feedback-panel templates` to list them.
+1. **Match the answers the user asked for to a template.** Run `feedback-panel templates` to list them.
 
    | He wants | Template |
    |---|---|
@@ -27,7 +27,7 @@ Running them is covered by skill `feedback-panel`.
    | "tick the ones that ..." | `check` |
    | open questions | `questions` (free text; each item is a question; optional `placeholder`) |
 
-2. **If his answers differ slightly** (other labels, an extra option), don't make a new template.
+2. **If their answers differ slightly** (other labels, an extra option), don't make a new template.
    Copy the closest template's `choices` into the items file and edit them; the items file wins
    over the template only for title and instructions, so pass **no** `--template` in that case.
    A choice is `{"id", "label", "tone": danger|warn|ok|info|neutral, "hint"}`. Its position sets
@@ -38,7 +38,7 @@ Running them is covered by skill `feedback-panel`.
 
 ## Adding a template
 
-When Daniel wants a new kind of form to stay available, or the same custom choices come up a
+When the user wants a new kind of form to stay available, or the same custom choices come up a
 second time:
 
 ```bash

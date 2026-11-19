@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document feedback</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#6b6b80; --rule:#e2e4ea; --accent:#1a4d7a; --rec:#d22; --bg:#f3f4f7; --pin:#e8710a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  header { position:sticky; top:0; z-index:20; background:#fff; border-bottom:1px solid var(--rule); padding:10px 18px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 12px 0 0; }
+  header .hint { color:var(--muted); font-size:13px; flex:1 1 300px; }
+  button { font:inherit; border:1px solid var(--rule); background:#fff; border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.rec { background:var(--rec); color:#fff; border-color:var(--rec); }
+  button.small { padding:3px 8px; font-size:13px; }
+  #status { font-size:13px; color:var(--muted); min-width:110px; }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 380px; gap:18px; padding:18px; }
+  #pages { display:flex; flex-direction:column; align-items:center; gap:18px; }
+  .page { position:relative; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.12); max-width:900px; width:100%; }
+  .page img { display:block; width:100%; height:auto; cursor:crosshair; user-select:none; }
+  .page .bar { position:absolute; top:-1px; right:-1px; display:flex; gap:6px; padding:6px; opacity:.85; }
+  .page .num { position:absolute; top:6px; left:8px; font-size:12px; color:var(--muted); }
+  .pin { position:absolute; transform:translate(-50%,-100%); background:var(--pin); color:#fff; font-size:12px; font-weight:700;
+         min-width:24px; height:24px; border-radius:12px 12px 12px 2px; display:flex; align-items:center; justify-content:center;
+         padding:0 6px; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.35); }
+  .pin.sel { outline:3px solid var(--accent); }
+  .pin.recording { background:var(--rec); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { transform:translate(-50%,-100%) scale(1.15); } }
+  aside { position:sticky; top:70px; align-self:start; max-height:calc(100vh - 90px); overflow:auto; }
+  .card { background:#fff; border:1px solid var(--rule); border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+  .card.sel { border-color:var(--accent); box-shadow:0 0 0 2px rgba(26,77,122,.15); }
+  .card .top { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
+  .card .badge { background:var(--pin); color:#fff; border-radius:10px; padding:0 7px; font-weight:700; margin-right:6px; }
+  .card .badge.doc { background:var(--accent); }
+  .card audio { width:100%; height:32px; margin-top:6px; }
+  .card textarea { width:100%; min-height:44px; margin-top:6px; font:inherit; font-size:14px; border:1px solid var(--rule); border-radius:6px; padding:6px; resize:vertical; }
+  .card .row { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; align-items:center; }
+  .card .transcript { font-size:13px; background:#f6f7f9; border-radius:6px; padding:6px 8px; margin-top:6px; }
+  .card .outcome { font-size:13px; margin-top:6px; color:#1b6e3a; }
+  .timer { font-variant-numeric:tabular-nums; color:var(--rec); font-weight:600; }
+  .empty { color:var(--muted); font-size:14px; padding:8px; }
+  #micerr { display:none; background:#fff3cd; border:1px solid #f0d58a; padding:8px 12px; border-radius:8px; margin:0 18px; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Document feedback</h1>
+  <span class="hint" id="hint"></span>
+  <button id="docbtn">🎙 Whole document</button>
+  <span id="status">loading…</span>
+  <button class="primary" id="submit">Submit round</button>
+</header>
+<div id="micerr"></div>
+<main>
+  <div id="pages"></div>
+  <aside><div id="list"></div></aside>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let ITEMS = null, comments = [], sel = null, recState = null, saveT = null, outcomes = {};
+const uid = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+const fmt = s => (Math.floor(s / 60)) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+
+function ordered() {
+  const o = { document: 0, page: 1, point: 2 };
+  return [...comments].sort((a, b) => (a.page || 0) - (b.page || 0) || o[a.scope] - o[b.scope] || (a.y || 0) - (b.y || 0));
+}
+
+async function load() {
+  const r = await (await fetch("/api/session")).json();
+  ITEMS = r.items; comments = r.comments || []; outcomes = r.outcomes || {};
+  $("#title").textContent = ITEMS.title || "Document feedback";
+  $("#hint").textContent = ITEMS.instructions || "";
+  document.title = "Feedback – " + (ITEMS.title || "document");
+  const pages = $("#pages");
+  for (const p of ITEMS.pages) {
+    const d = document.createElement("div");
+    d.className = "page"; d.dataset.page = p.n;
+    d.innerHTML = `<span class="num">Page ${p.n}</span><div class="bar"><button class="small" data-pagebtn="${p.n}">🎙 This page</button></div><img src="${p.img}" alt="Page ${p.n}">`;
+    d.querySelector("img").addEventListener("click", ev => {
+      const rc = ev.target.getBoundingClientRect();
+      addComment({ scope: "point", page: p.n, x: (ev.clientX - rc.left) / rc.width, y: (ev.clientY - rc.top) / rc.height });
+    });
+    d.querySelector("[data-pagebtn]").addEventListener("click", () => addComment({ scope: "page", page: p.n }));
+    pages.appendChild(d);
+  }
+  render(); setStatus(r.response && r.response.status ? r.response.status : "draft");
+}
+
+function setStatus(t) { $("#status").textContent = t; }
+
+async function addComment(c) {
+  if (recState) await stopRec();
+  c.id = uid(); c.note = ""; comments.push(c); sel = c.id; render();
+  startRec(c.id);
+}
+
+function render() {
+  document.querySelectorAll(".pin").forEach(e => e.remove());
+  const list = ordered();
+  list.forEach((c, i) => {
+    c._n = i + 1;
+    if (c.scope === "point") {
+      const pg = document.querySelector(`.page[data-page="${c.page}"]`);
+      const pin = document.createElement("div");
+      pin.className = "pin" + (c.id === sel ? " sel" : "") + (recState && recState.id === c.id ? " recording" : "");
+      pin.style.left = (c.x * 100) + "%"; pin.style.top = (c.y * 100) + "%";
+      pin.style.marginTop = pg.querySelector("img").offsetTop + "px";
+      pin.textContent = c._n;
+      pin.onclick = () => { sel = c.id; render(); document.getElementById("card-" + c.id)?.scrollIntoView({ block: "nearest" }); };
+      pg.appendChild(pin);
+    }
+  });
+  const L = $("#list"); L.innerHTML = "";
+  if (!list.length) { L.innerHTML = '<div class="empty">No comments yet. Click on a page to pin a voice comment, or press “Whole document”.</div>'; return; }
+  for (const c of list) {
+    const where = c.scope === "document" ? "Whole document" : c.scope === "page" ? `Page ${c.page}` : `Page ${c.page}, pinned`;
+    const rec = recState && recState.id === c.id;
+    const div = document.createElement("div");
+    div.className = "card" + (c.id === sel ? " sel" : ""); div.id = "card-" + c.id;
+    div.innerHTML = `<div class="top"><span><span class="badge ${c.scope !== "point" ? "doc" : ""}">${c._n}</span>${where}</span>
+      <button class="small" data-del>✕</button></div>
+      <div class="row">${rec ? `<button class="rec small" data-stop>■ Stop</button><span class="timer" id="timer">0:00</span>`
+        : `<button class="small" data-rec>${c.audio ? "🎙 Re-record" : "🎙 Record"}</button>${c.duration_s ? `<span style="font-size:12px;color:var(--muted)">${fmt(c.duration_s)}</span>` : ""}`}</div>
+      ${c.audio && !rec ? `<audio controls preload="none" src="/audio/${c.audio}?t=${c._v || 0}"></audio>` : ""}
+      ${c.transcript ? `<div class="transcript">${esc(c.transcript)}</div>` : ""}
+      <textarea placeholder="…or type a note">${esc(c.note || "")}</textarea>
+      ${outcomes[c.id] ? `<div class="outcome">${esc(outcomes[c.id].state + (outcomes[c.id].text ? ": " + outcomes[c.id].text : ""))}</div>` : ""}`;
+    div.onclick = e => { if (e.target.tagName !== "TEXTAREA" && e.target.tagName !== "AUDIO" && sel !== c.id) { sel = c.id; render(); } };
+    div.querySelector("[data-del]").onclick = async e => { e.stopPropagation(); if (rec) await stopRec(true); comments = comments.filter(x => x.id !== c.id); render(); save(); };
+    const rb = div.querySelector("[data-rec]"); if (rb) rb.onclick = e => { e.stopPropagation(); sel = c.id; startRec(c.id); };
+    const sb = div.querySelector("[data-stop]"); if (sb) sb.onclick = e => { e.stopPropagation(); stopRec(); };
+    div.querySelector("textarea").oninput = e => { c.note = e.target.value; save(); };
+    L.appendChild(div);
+  }
+}
+const esc = s => String(s).replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
+let stream = null;
+async function startRec(id) {
+  if (recState) await stopRec();
+  try { stream = stream || await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { const m = $("#micerr"); m.style.display = "block"; m.textContent = "Microphone not available (" + e.message + "). You can still type notes."; render(); return; }
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+  const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+  const chunks = []; const t0 = Date.now();
+  mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+  recState = { id, mr, chunks, t0, tick: setInterval(() => { const t = $("#timer"); if (t) t.textContent = fmt((Date.now() - t0) / 1000); }, 250) };
+  mr.start(1000); render(); setStatus("recording…");
+}
+
+function stopRec(discard) {
+  return new Promise(resolve => {
+    if (!recState) return resolve();
+    const { id, mr, chunks, t0, tick } = recState;
+    clearInterval(tick);
+    mr.onstop = async () => {
+      recState = null;
+      const c = comments.find(x => x.id === id);
+      if (!discard && c && chunks.length) {
+        setStatus("uploading…");
+        const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
+        const r = await fetch(`/api/audio?id=${id}&ext=webm`, { method: "POST", body: blob });
+        if (r.ok) { c.audio = (await r.json()).audio; c.duration_s = Math.round((Date.now() - t0) / 100) / 10; c._v = Date.now(); delete c.transcript; }
+      }
+      render(); await save(); resolve();
+    };
+    mr.stop();
+  });
+}
+
+async function save(submit) {
+  clearTimeout(saveT);
+  const go = async () => {
+    const body = { comments: comments.map(({ _n, _v, ...c }) => c), submit: !!submit };
+    const r = await fetch("/api/comments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json(); setStatus(j.status === "submitted" ? "submitted ✓" : "saved " + new Date().toLocaleTimeString());
+  };
+  if (submit) return go();
+  saveT = setTimeout(go, 400);
+}
+
+$("#docbtn").onclick = () => addComment({ scope: "document" });
+$("#submit").onclick = async () => { if (recState) await stopRec(); await save(true); };
+document.addEventListener("keydown", async e => {
+  if (e.target.tagName === "TEXTAREA") return;
+  if (e.key === "Escape" && recState) { e.preventDefault(); await stopRec(); }
+  if ((e.key === "r" || e.key === "R") && sel && !recState) { e.preventDefault(); startRec(sel); }
+});
+setInterval(async () => {  // pick up transcripts and outcomes Claude writes while the page is open
+  if (recState) return;
+  try {
+    const r = await (await fetch("/api/session")).json(); outcomes = r.outcomes || {};
+    let changed = false;
+    for (const c of r.comments || []) { const m = comments.find(x => x.id === c.id); if (m && c.transcript && m.transcript !== c.transcript && m.audio === c.audio) { m.transcript = c.transcript; changed = true; } }
+    if (changed && !document.activeElement?.matches("textarea")) render();
+  } catch (e) {}
+}, 5000);
+load();
+</script>
+</body>
+</html>
